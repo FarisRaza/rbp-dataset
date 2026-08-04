@@ -1,0 +1,29 @@
+# Vendored third-party code, fetched by setup_environment.py.
+# ~211 MB: the PSpred clone (with its trained models) and the patched
+# metapredict source. Both are reproducible from setup_environment.py, so they
+# are deliberately not tracked.
+vendor/
+
+# Virtual environments. These live outside the package by default (see the
+# ENV_ROOT note in paths.py -- torch blows past Windows' MAX_PATH from a long
+# project path), but ignore them in case someone points EXPANSION_ENVS here.
+envs/
+.venv/
+venv/
+
+# Per-family intermediates. Hundreds of MB, fully regenerable by run_all.py,
+# and by default written to a temp directory rather than here.
+intermediates/
+*.pkl
+
+# Generated outputs. These belong next to the data, not in the repo.
+Missing_Proteins_Rows.csv
+*_Extended.csv
+*_Expanded.csv
+New_Columns_Documentation.csv
+
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.DS_Store
+Thumbs.db
