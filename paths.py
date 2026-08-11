@@ -93,6 +93,7 @@ CONDENSATE_EXTRA = os.path.join(KAPPEL, "MISSING.csv")
 OT_ASSOCIATIONS = os.path.join(KAPPEL, "association_by_datatype_direct_full.csv")
 OT_EXPRESSION = os.path.join(KAPPEL, "expression_all.csv")
 OT_TARGETS = os.path.join(KAPPEL, "target_full.csv")
+OT_DISEASES = os.path.join(KAPPEL, "opentargets_disease_25.12.parquet")
 RCSB_SIFTS = os.path.join(SCRATCH, "pdb_chain_uniprot.tsv.gz")
 
 #: Which source files each feature family needs. Used by `check()` so a run
@@ -129,6 +130,8 @@ PROVENANCE = {
     OT_ASSOCIATIONS: "Open Targets Platform export (associationByDatatypeDirect)",
     OT_EXPRESSION: "Open Targets Platform export (expression)",
     OT_TARGETS: "Open Targets Platform export (target)",
+    OT_DISEASES: "Open Targets Platform 25.12 disease metadata: "
+                 "https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/25.12/output/disease/disease.parquet",
     PSPRED_REPO: "git clone https://github.com/KULL-Centre/_2024_buelow_PSpred  (or run setup_environment.py)",
     RCSB_SIFTS: "SIFTS weekly mapping: https://ftp.ebi.ac.uk/pub/databases/msd/sifts/flatfiles/tsv/pdb_chain_uniprot.tsv.gz",
 }

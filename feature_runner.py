@@ -269,44 +269,61 @@ def run_opentargets(
     rows,
     opentargets_associations=None,
     opentargets_expression=None,
-    opentargets_targets=None,
+    opentargets_diseases=None,
+    opentargets_release=None,
+    opentargets_expression_long_output=None,
+    opentargets_disease_long_output=None,
+    opentargets_cache=None,
     **_,
 ):
-    """Open Targets associations/expression/target records keyed by ENSG."""
+    """Clean Open Targets tissue expression and disease records keyed by ENSG."""
     import opentargets
 
     _require(opentargets_associations, "--opentargets-associations")
     _require(opentargets_expression, "--opentargets-expression")
-    _require(opentargets_targets, "--opentargets-targets")
+    _require(opentargets_diseases, "--opentargets-diseases")
+    release = opentargets_release or opentargets.DEFAULT_RELEASE
     wanted = {
         identifier
         for row in rows
         for identifier in row.get("ensembl_gene_ids") or []
     }
-    associations = opentargets.load_associations(opentargets_associations, wanted)
-    expression = opentargets.load_expression(opentargets_expression, wanted)
-    targets, target_columns = opentargets.load_targets(opentargets_targets, wanted)
-    for row in rows:
-        ensg = row.get("ensembl_gene_ids") or []
-        yield {
-            "protein_key": row["protein_key"],
-            **opentargets.columns_for(
-                ensg, associations, expression, targets, target_columns
-            ),
-            "opentargets_annotation_scope": "gene-level, keyed by ENSG",
-        }
+    diseases = opentargets.load_disease_metadata(opentargets_diseases)
+    store = opentargets.build_store(
+        opentargets_expression,
+        opentargets_associations,
+        wanted,
+        destination=opentargets_cache,
+    )
+    try:
+        if opentargets_expression_long_output:
+            write_feature_rows(
+                opentargets.expression_long_rows_from_store(store, release),
+                opentargets_expression_long_output,
+                opentargets.EXPRESSION_LONG_COLUMNS,
+            )
+        if opentargets_disease_long_output:
+            write_feature_rows(
+                opentargets.disease_long_rows_from_store(store, diseases, release),
+                opentargets_disease_long_output,
+                opentargets.DISEASE_LONG_COLUMNS,
+            )
+        for row in rows:
+            ensg = row.get("ensembl_gene_ids") or []
+            yield {
+                "protein_key": row["protein_key"],
+                **opentargets.clean_columns_from_store(
+                    ensg, store, diseases, release
+                ),
+            }
+    finally:
+        store.close()
 
 
-def columns_opentargets(opentargets_targets=None, **_):
-    import csv
+def columns_opentargets(**_):
     import opentargets
 
-    _require(opentargets_targets, "--opentargets-targets")
-    with open(opentargets_targets, newline="", encoding="utf-8", errors="replace") as handle:
-        target_columns = [c for c in next(csv.reader(handle)) if c != "id"]
-    return ["protein_key"] + opentargets.ASSOCIATION_COLUMNS + ["tissues"] + target_columns + [
-        "opentargets_annotation_scope"
-    ]
+    return ["protein_key"] + opentargets.COLUMNS
 
 
 def run_cdcode(rows, cdcode_root=None, **_):
@@ -523,7 +540,11 @@ def family_main(family, argv=None):
     parser.add_argument("--ptm-csv")
     parser.add_argument("--opentargets-associations")
     parser.add_argument("--opentargets-expression")
-    parser.add_argument("--opentargets-targets")
+    parser.add_argument("--opentargets-diseases")
+    parser.add_argument("--opentargets-release")
+    parser.add_argument("--opentargets-expression-long-output")
+    parser.add_argument("--opentargets-disease-long-output")
+    parser.add_argument("--opentargets-cache")
     parser.add_argument("--cdcode-root")
     parser.add_argument("--string-links")
     parser.add_argument("--pspred-repo")

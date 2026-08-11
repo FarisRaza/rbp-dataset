@@ -24,6 +24,7 @@ import assemble_features
 import ensembl_ids
 import isoform_catalog
 import ncbi_isoforms
+import opentargets
 import paths
 import swissprot_source
 from catalog_io import write_rows
@@ -52,9 +53,12 @@ OPTIONAL_FEATURES = ["rcsb"]
 ALL_FEATURES = DEFAULT_FEATURES + OPTIONAL_FEATURES
 
 
-def layout(work_dir):
+def layout(work_dir, opentargets_release=opentargets.DEFAULT_RELEASE):
     root = os.path.abspath(work_dir)
     sources = os.path.join(root, "sources")
+    opentargets_root = os.path.join(
+        sources, "opentargets", opentargets_release
+    )
     return {
         "root": root,
         "sources": sources,
@@ -62,6 +66,17 @@ def layout(work_dir):
         "ncbi_zip": os.path.join(sources, "ncbi_human_gene.zip"),
         "ncbi_dir": os.path.join(sources, "ncbi_human_gene"),
         "ensembl": os.path.join(sources, "Homo_sapiens.GRCh38.pep.all.fa.gz"),
+        "opentargets_root": opentargets_root,
+        "opentargets_associations": os.path.join(
+            opentargets_root, "association_by_datatype_direct"
+        ),
+        "opentargets_expression": os.path.join(
+            opentargets_root, "expression"
+        ),
+        "opentargets_diseases": os.path.join(
+            opentargets_root, "disease.parquet"
+        ),
+        "opentargets_release": opentargets_release,
         "catalog": os.path.join(root, "catalog", "human_protein_isoforms.parquet"),
         "catalog_audit": os.path.join(root, "catalog", "catalog.audit.json"),
         "features": os.path.join(root, "features"),
@@ -83,7 +98,7 @@ def parse_features(value):
     return [family for family in ALL_FEATURES if family in selected]
 
 
-def download_stage(config, args):
+def download_stage(config, args, selected=None):
     os.makedirs(config["sources"], exist_ok=True)
     swissprot_source.download_human_reviewed(
         config["swissprot"], force=args.force
@@ -104,6 +119,13 @@ def download_stage(config, args):
     )
     if not args.no_ensembl_fallback:
         ensembl_ids.download_current_peptides(config["ensembl"], force=args.force)
+    if selected is None or "opentargets" in selected:
+        print(f"downloading Open Targets release {args.opentargets_release}")
+        opentargets.download_release(
+            config["opentargets_root"],
+            release=args.opentargets_release,
+            force=args.force,
+        )
     return ncbi_paths
 
 
@@ -147,14 +169,23 @@ def catalog_stage(config, args):
 
 
 def _feature_sources(config):
+    def prefer(downloaded, historical):
+        return downloaded if os.path.exists(downloaded) else historical
+
     return {
         "swissprot": config["swissprot"],
         "eclip_table": os.path.join(paths.KAPPEL, "rbp_master_with_eclip.csv"),
         "interpro_tsv": os.path.join(paths.KAPPEL, "df_np_unique.interpro.tsv"),
         "ptm_csv": os.path.join(paths.KAPPEL, "df_ptm.csv"),
-        "opentargets_associations": paths.OT_ASSOCIATIONS,
-        "opentargets_expression": paths.OT_EXPRESSION,
-        "opentargets_targets": paths.OT_TARGETS,
+        "opentargets_associations": prefer(
+            config["opentargets_associations"], paths.OT_ASSOCIATIONS
+        ),
+        "opentargets_expression": prefer(
+            config["opentargets_expression"], paths.OT_EXPRESSION
+        ),
+        "opentargets_diseases": prefer(
+            config["opentargets_diseases"], paths.OT_DISEASES
+        ),
         "cdcode_root": paths.KAPPEL,
         "string_links": paths.STRING_LINKS,
         "pspred_repo": paths.PSPRED_REPO,
@@ -169,7 +200,7 @@ SOURCE_REQUIREMENTS = {
     "interpro": ["interpro_tsv"],
     "ptm": ["ptm_csv"],
     "opentargets": [
-        "opentargets_associations", "opentargets_expression", "opentargets_targets"
+        "opentargets_associations", "opentargets_expression", "opentargets_diseases"
     ],
     "cdcode": ["cdcode_root"],
     "string": ["string_links"],
@@ -201,7 +232,7 @@ def _feature_command(family, config, sources):
         "ptm_csv": "--ptm-csv",
         "opentargets_associations": "--opentargets-associations",
         "opentargets_expression": "--opentargets-expression",
-        "opentargets_targets": "--opentargets-targets",
+        "opentargets_diseases": "--opentargets-diseases",
         "cdcode_root": "--cdcode-root",
         "string_links": "--string-links",
         "pspred_repo": "--pspred-repo",
@@ -221,6 +252,16 @@ def _feature_command(family, config, sources):
         command.extend(["--domain-features", dependency_paths["domain_features"]])
     if family == "go_roles":
         command.extend(["--go-features", dependency_paths["go_features"]])
+    if family == "opentargets":
+        command.extend([
+            "--opentargets-release", config["opentargets_release"],
+            "--opentargets-cache",
+            os.path.join(config["features"], "opentargets_source_index.sqlite"),
+            "--opentargets-expression-long-output",
+            os.path.join(config["features"], "opentargets_expression_long.parquet"),
+            "--opentargets-disease-long-output",
+            os.path.join(config["features"], "opentargets_disease_long.parquet"),
+        ])
     return command, output
 
 
@@ -275,6 +316,7 @@ def write_run_manifest(config, args, selected):
         "include_predicted_refseq": args.include_predicted,
         "include_orphan_refseq": args.include_orphan_refseq,
         "ensembl_exact_sequence_fallback": not args.no_ensembl_fallback,
+        "opentargets_release": args.opentargets_release,
         "feature_sidecars": {
             family: os.path.join(config["features"], family + ".parquet")
             for family in selected
@@ -300,6 +342,11 @@ def parser():
     )
     p.add_argument("--output", help="final .parquet or .csv path")
     p.add_argument("--datasets-exe", help="path to NCBI datasets executable")
+    p.add_argument(
+        "--opentargets-release",
+        default=opentargets.DEFAULT_RELEASE,
+        help="pinned Open Targets Platform release (default: %(default)s)",
+    )
     p.add_argument("--include-predicted", action="store_true", help="include XP_ products")
     p.add_argument(
         "--include-orphan-refseq", action="store_true",
@@ -317,11 +364,11 @@ def parser():
 def main(argv=None):
     args = parser().parse_args(argv)
     selected = parse_features(args.features)
-    config = layout(args.work_dir)
+    config = layout(args.work_dir, args.opentargets_release)
     write_run_manifest(config, args, selected)
 
     if args.command in {"download", "all"}:
-        download_stage(config, args)
+        download_stage(config, args, selected)
     if args.command in {"catalog", "all"}:
         catalog_stage(config, args)
     if args.command in {"features", "all"}:

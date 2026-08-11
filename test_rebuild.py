@@ -1,5 +1,6 @@
 """Fast offline tests for the clean catalog, PTM projection and assembly."""
 
+import csv
 import json
 import os
 import tempfile
@@ -7,6 +8,7 @@ import unittest
 
 import assemble_features
 import isoform_catalog
+import opentargets
 import ptm
 from catalog_io import read_rows, write_feature_rows, write_rows
 from rebuild_schema import BASE_COLUMNS, LIST_COLUMNS
@@ -139,6 +141,96 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(manifest["output_rows"], 2)
             final = read_rows(output)
             self.assertEqual(len(final), 2)
+
+
+class OpenTargetsTests(unittest.TestCase):
+    def test_numpy_expression_export_is_normalized(self):
+        raw = """[{'efo_code': 'UBERON_1', 'label': 'brain',
+        'organs': array(['brain'], dtype=object),
+        'anatomical_systems': array(['nervous system'], dtype=object),
+        'rna': {'value': 12.5, 'zscore': 2, 'level': 4, 'unit': 'TPM'},
+        'protein': {'reliability': True, 'level': 2,
+        'cell_type': array([{'name': 'neurons', 'reliability': True, 'level': 2}], dtype=object)}}
+        {'efo_code': 'UBERON_2', 'label': 'liver',
+        'organs': array(['liver'], dtype=object),
+        'anatomical_systems': array(['digestive system'], dtype=object),
+        'rna': {'value': 1.0, 'zscore': -1, 'level': 1, 'unit': 'TPM'},
+        'protein': {'reliability': False, 'level': -1,
+        'cell_type': array([], dtype=object)}}]"""
+        tissues = opentargets.parse_tissues(raw)
+        self.assertEqual([item["label"] for item in tissues], ["brain", "liver"])
+        clean = opentargets._clean_tissue("ENSG1", tissues[0])
+        self.assertEqual(clean["rna_value"], 12.5)
+        self.assertEqual(clean["protein_cell_types"][0]["name"], "neurons")
+
+    def test_clean_disease_columns_name_scores_honestly(self):
+        expression = {"ENSG1": [{
+            "ensembl_gene_id": "ENSG1", "tissue_id": "UBERON_1",
+            "tissue_name": "brain",
+        }]}
+        associations = {"ENSG1": [
+            {"disease_id": "EFO_1", "datatype_id": "literature",
+             "score": 0.3, "evidence_count": 2},
+            {"disease_id": "EFO_1", "datatype_id": "genetic_association",
+             "score": 0.8, "evidence_count": 1},
+        ]}
+        diseases = {"EFO_1": {
+            "name": "test condition", "description": "fixture",
+            "therapeutic_areas": [{"id": "TA_1", "name": "test area"}],
+        }}
+        result = opentargets.clean_columns_for(
+            ["ENSG1"], expression, associations, diseases, release="test"
+        )
+        record = result["opentargets_disease_associations"][0]
+        self.assertEqual(record["disease_name"], "test condition")
+        self.assertEqual(record["max_datatype_score"], 0.8)
+        self.assertNotIn("score", record)
+        self.assertEqual(result["opentargets_disease_count"], 1)
+        self.assertEqual(result["opentargets_release"], "test")
+        self.assertEqual(set(result), set(opentargets.COLUMNS))
+
+    def test_disk_store_keeps_clean_family_runnable_in_bounded_memory(self):
+        with tempfile.TemporaryDirectory() as root:
+            expression_path = os.path.join(root, "expression.csv")
+            association_path = os.path.join(root, "association.csv")
+            cache_path = os.path.join(root, "opentargets.sqlite")
+            with open(expression_path, "w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=["id", "tissues"])
+                writer.writeheader()
+                writer.writerow({
+                    "id": "ENSG1",
+                    "tissues": "[{'efo_code':'UBERON_1','label':'brain',"
+                    "'organs':array(['brain'],dtype=object),"
+                    "'anatomical_systems':array(['nervous'],dtype=object),"
+                    "'rna':{'value':2.0,'zscore':1,'level':3,'unit':'TPM'},"
+                    "'protein':{'reliability':True,'level':2,"
+                    "'cell_type':array([],dtype=object)}}]",
+                })
+            with open(association_path, "w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=[
+                    "diseaseId", "targetId", "datatypeId", "score",
+                    "evidenceCount",
+                ])
+                writer.writeheader()
+                writer.writerow({
+                    "diseaseId": "EFO_1", "targetId": "ENSG1",
+                    "datatypeId": "literature", "score": "0.5",
+                    "evidenceCount": "3",
+                })
+            store = opentargets.build_store(
+                expression_path, association_path, {"ENSG1"}, cache_path
+            )
+            try:
+                result = opentargets.clean_columns_from_store(
+                    ["ENSG1"], store,
+                    {"EFO_1": {"name": "condition", "description": None,
+                                "therapeutic_areas": []}},
+                )
+            finally:
+                store.close()
+            self.assertTrue(os.path.exists(cache_path))
+            self.assertEqual(result["opentargets_expression_tissue_count"], 1)
+            self.assertEqual(result["opentargets_disease_count"], 1)
 
 
 if __name__ == "__main__":

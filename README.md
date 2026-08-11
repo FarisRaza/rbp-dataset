@@ -229,9 +229,10 @@ go.go_for_record(record)   # -> C_ids/C_descriptions/C_evidence, P_*, F_*
 The three lists within an aspect are positionally parallel. No evidence-code
 filtering: IEA annotations are included, matching the existing rows.
 
-### 9. Open Targets — `opentargets.py` (33 columns)
+### 9. Historical Open Targets compatibility (33 columns)
 
-Disease associations, tissue expression and target annotation, keyed on ENSG.
+The older `run_all.py` compatibility workflow preserves the original disease,
+expression and broad target annotation dump keyed on ENSG:
 
 ```python
 import opentargets as ot
@@ -244,6 +245,12 @@ ot.columns_for(ensg_list, associations, expression, targets, target_columns)
 Every column is a **dict keyed by ENSG**, because one protein can map to several
 (`ID` is semicolon-separated). Sources total ~2.9 GB and one field can exceed
 50 KB per gene, so all three are streamed and filtered rather than loaded.
+
+The clean `rebuild_from_scratch.py` workflow replaces this block with eight
+explicit columns containing normalized tissue expression and named
+disease/condition associations. It does not read `target_full.csv`, and it also
+writes optional long-form expression and disease Parquet tables. See
+[`REBUILD_FROM_SCRATCH.md`](REBUILD_FROM_SCRATCH.md#open-targets-clean-expression-and-condition-columns).
 
 ### 10. PSLab — `pslab.py` (11 columns)
 

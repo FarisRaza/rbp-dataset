@@ -30,6 +30,9 @@ sources/                                  downloaded, versioned source artifacts
 catalog/human_protein_isoforms.parquet    identity + sequence table
 catalog/catalog.audit.json                row and deduplication counts
 features/<family>.parquet                 one independently rerunnable family
+features/opentargets_expression_long.parquet  one row per ENSG/tissue
+features/opentargets_disease_long.parquet     one row per ENSG/condition/datatype
+features/opentargets_source_index.sqlite      bounded-memory source index
 run_manifest.json                         requested families and paths
 ```
 
@@ -103,7 +106,7 @@ by `protein_key`. Typical commands are below; every program also supports
 | eCLIP/CLIP | `python annotate_eclip.py --input catalog.parquet --output eclip.parquet --eclip-table rbp_master_with_eclip.csv` | ENCODE, ENCORI, POSTAR3 and Skipper compilation |
 | InterPro | `python annotate_interpro.py --input catalog.parquet --output interpro.parquet --interpro-tsv df_np_unique.interpro.tsv` | InterProScan TSV joined by RefSeq protein |
 | PTM | `python annotate_ptm.py --input catalog.parquet --output ptm.parquet --ptm-csv df_ptm.csv` | canonical UniProt sites; alignment projection to isoforms |
-| Open Targets | `python annotate_opentargets.py ...` | three Open Targets exports keyed by ENSG |
+| Open Targets | `python annotate_opentargets.py ...` | tissue expression plus named disease/condition associations, keyed by ENSG |
 | CD-CODE | `python annotate_cdcode.py ... --cdcode-root <source-dir>` | condensate membership by UniProt parent |
 | STRING | `python annotate_string.py ... --string-links 9606.protein.links.v12.0.txt` | all represented ENSP queries |
 | PSLab | `%PYTHON_PSLAB% annotate_pslab.py ... --idr-features idr.parquet --pspred-repo <repo>` | one prediction per metapredict IDR |
@@ -134,17 +137,72 @@ Use `summarize_eclip.py` to regenerate the eCLIP summary statistics and figures.
   retained only if sequence alignment maps the position and the modified amino
   acid is conserved. Projection method, parent accession and dropped-site count
   are stored.
+- Open Targets annotations are gene-level and are broadcast to canonical and
+  isoform rows that share an ENSG. Missing data means "not present in the
+  release", not a measured negative result.
+
+## Open Targets: clean expression and condition columns
+
+The clean rebuild does **not** import the broad historical `target_full.csv`
+dump. It downloads three typed, pinned Open Targets datasets and writes only
+the requested information:
+
+- `opentargets_tissue_expression`: flat records containing ENSG, tissue EFO or
+  UBERON ID/name, organ/system labels, RNA value/unit/z-score/level, protein
+  level/reliability and cell-type protein levels;
+- `opentargets_expression_tissue_count`;
+- `opentargets_disease_associations`: named conditions, descriptions,
+  therapeutic areas and evidence broken down by datatype;
+- `opentargets_disease_count`, `opentargets_disease_names` and
+  `opentargets_therapeutic_areas`;
+- `opentargets_release` and `opentargets_annotation_scope`.
+
+`max_datatype_score` is explicitly the maximum of the per-datatype scores. It
+is not mislabeled as the Open Targets overall association score. The complete
+per-datatype scores and evidence counts remain in `evidence_by_datatype`.
+
+The master intentionally defaults to the reproducible `25.12` release, which
+matches the compact tissue-expression schema used by the local historical
+export. Choose another release that still publishes the compatible
+`expression` dataset with `--opentargets-release YY.MM`. Open Targets changed
+that product to the substantially different `baseline_expression` dataset in
+26.06, so 26.06 is not silently treated as the same measurement. The
+`download` and `all` commands retrieve `expression`,
+`association_by_datatype_direct` and `disease` Parquet files into
+`<work-dir>/sources/opentargets/<release>/`.
+
+Run only this family with already-downloaded sources:
+
+```bash
+python annotate_opentargets.py \
+  --input catalog/human_protein_isoforms.parquet \
+  --output features/opentargets.parquet \
+  --opentargets-expression sources/opentargets/25.12/expression \
+  --opentargets-associations sources/opentargets/25.12/association_by_datatype_direct \
+  --opentargets-diseases sources/opentargets/25.12/disease.parquet \
+  --opentargets-release 25.12 \
+  --opentargets-cache features/opentargets_source_index.sqlite \
+  --opentargets-expression-long-output features/opentargets_expression_long.parquet \
+  --opentargets-disease-long-output features/opentargets_disease_long.parquet
+```
+
+The two `*-long-output` arguments are optional. They provide analysis-ready
+tables without requiring users to parse nested cells from the assembled
+protein table. The SQLite cache keeps the full-proteome run bounded in memory;
+if `--opentargets-cache` is omitted, an equivalent temporary index is deleted
+after the sidecar is written. The loaders also accept the older local CSV
+association and multiline expression exports for backward compatibility.
 
 ## Source availability
 
-The master script downloads Swiss-Prot, NCBI Datasets and Ensembl automatically.
+The master script downloads Swiss-Prot, NCBI Datasets, Ensembl and the pinned
+Open Targets expression/association/disease datasets automatically.
 Several historical feature sources are local snapshots and must be placed in
 `KAPPEL_DIR` (the parent data directory by default):
 
 - `rbp_master_with_eclip.csv`
 - `df_np_unique.interpro.tsv`
 - `df_ptm.csv`
-- Open Targets association, expression and target exports
 - STRING links and the CD-CODE source directory
 
 Run with `--skip-unavailable` to build every family whose source is present, or
