@@ -66,6 +66,19 @@ NEW_ROWS = os.path.join(KAPPEL, "Missing_Proteins_Rows.csv")
 EXPANDED_TABLE = os.path.join(
     KAPPEL, "Isoform_Post_Merge_PSLab_OpenTargets_Expanded.csv"
 )
+EXTENDED_TABLE = os.path.join(
+    KAPPEL, "Isoform_Post_Merge_PSLab_OpenTargets_Extended.csv"
+)
+RCSB_ENRICHED_TABLE = os.path.join(
+    KAPPEL, "Isoform_Post_Merge_PSLab_OpenTargets_Extended_RCSB.csv"
+)
+RCSB_SUMMARY = os.path.join(KAPPEL, "Human_Proteome_RCSB_PDB_Summary.csv")
+RCSB_ELEMENTS = os.path.join(
+    KAPPEL, "Human_Proteome_RCSB_Secondary_Structure.csv.gz"
+)
+RCSB_METADATA = os.path.join(
+    KAPPEL, "Human_Proteome_RCSB_Secondary_Structure.metadata.json"
+)
 
 # ---------------------------------------------------------------- sources ---
 UNIPROT_FASTA = os.path.join(KAPPEL, "uniprot_sprot.fasta")
@@ -80,6 +93,7 @@ CONDENSATE_EXTRA = os.path.join(KAPPEL, "MISSING.csv")
 OT_ASSOCIATIONS = os.path.join(KAPPEL, "association_by_datatype_direct_full.csv")
 OT_EXPRESSION = os.path.join(KAPPEL, "expression_all.csv")
 OT_TARGETS = os.path.join(KAPPEL, "target_full.csv")
+RCSB_SIFTS = os.path.join(SCRATCH, "pdb_chain_uniprot.tsv.gz")
 
 #: Which source files each feature family needs. Used by `check()` so a run
 #: fails immediately with a useful message instead of hours in.
@@ -93,6 +107,7 @@ REQUIREMENTS = {
     "cdcode": [CDCODE_DIR, CONDENSATE_TABLE, CONDENSATE_EXTRA],
     "opentargets": [OT_ASSOCIATIONS, OT_EXPRESSION, OT_TARGETS],
     "pslab": [PSPRED_REPO],
+    "rcsb": [UNIPROT_FASTA],
 }
 
 #: Where to obtain each source file, for the error message when one is absent.
@@ -115,6 +130,7 @@ PROVENANCE = {
     OT_EXPRESSION: "Open Targets Platform export (expression)",
     OT_TARGETS: "Open Targets Platform export (target)",
     PSPRED_REPO: "git clone https://github.com/KULL-Centre/_2024_buelow_PSpred  (or run setup_environment.py)",
+    RCSB_SIFTS: "SIFTS weekly mapping: https://ftp.ebi.ac.uk/pub/databases/msd/sifts/flatfiles/tsv/pdb_chain_uniprot.tsv.gz",
 }
 
 

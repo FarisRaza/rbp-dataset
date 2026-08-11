@@ -21,6 +21,10 @@ Missing_Proteins_Rows.csv
 *_Extended.csv
 *_Expanded.csv
 New_Columns_Documentation.csv
+Human_Proteome_RCSB_PDB_Summary.csv
+Human_Proteome_RCSB_Secondary_Structure.csv.gz
+Human_Proteome_RCSB_Secondary_Structure.metadata.json
+*_Extended_RCSB.csv
 
 __pycache__/
 *.py[cod]

@@ -1,0 +1,12 @@
+# Base interpreter used by catalog, most feature families and assembly.
+biopython>=1.81
+duckdb>=1.0
+localcider>=0.1.21
+numpy>=1.24
+openpyxl>=3.1
+pandas>=2.0
+pyarrow>=15
+requests>=2.31
+
+# metapredict and PSLab have separate environments because of their model and
+# scikit-learn constraints. Create those with: python setup_environment.py

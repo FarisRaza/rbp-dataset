@@ -15,6 +15,7 @@ import eclip
 import go_roles
 import interpro
 import paths
+import rcsb
 
 REGION_LABEL = {
     "utr3": "3' UTR",
@@ -134,6 +135,32 @@ GO_ROLE_INFO = {
                                      "original analysis used this combined definition.",
 }
 
+RCSB_INFO = {
+    "RCSB_PDB_IDs": "Sorted list of all experimental PDB entry IDs mapped to this "
+                    "reviewed UniProt accession by the current weekly SIFTS release.",
+    "RCSB_PDB_count": "Number of distinct experimental PDB entries in RCSB_PDB_IDs.",
+    "RCSB_PDB_chains": "Dict of PDB ID -> author chain IDs mapped to this UniProt "
+                       "accession. Chimeric chains are assigned residue-by-residue.",
+    "RCSB_PDB_entries_with_secondary_structure_count": "Number of mapped PDB entries "
+                       "with at least one helix or beta strand overlapping this "
+                       "protein's SIFTS-mapped residues.",
+    "RCSB_PDB_entries_without_secondary_structure_count": "Mapped PDB entries with no "
+                       "regular secondary-structure element overlapping the mapped "
+                       "part of this protein.",
+    "RCSB_secondary_structure_observation_count": "Number of chain-specific alpha-helix "
+                       "plus beta-strand observations. Equivalent chains remain "
+                       "separate because their assigned structures can differ.",
+    "RCSB_helix_observation_count": "Number of chain-specific alpha-helix observations "
+                       "overlapping the UniProt-mapped part of the protein.",
+    "RCSB_beta_strand_observation_count": "Number of chain-specific beta-strand "
+                       "observations overlapping the UniProt-mapped part of the protein.",
+    "RCSB_secondary_structure_complete_mapping_count": "Element observations whose full "
+                       "PDB sequence interval maps exactly to UniProt coordinates.",
+    "RCSB_secondary_structure_partial_mapping_count": "Element observations that overlap "
+                       "the protein but are only partly mappable to UniProt, including "
+                       "unequal-length SIFTS segments for which no coordinate is guessed.",
+}
+
 
 def build():
     rows = []
@@ -159,6 +186,22 @@ def build():
             "Granularity": "Protein",
         })
 
+    for column in rcsb.SUMMARY_COLUMNS:
+        rows.append({
+            "Family": "RCSB PDB secondary structure",
+            "Column Name": column,
+            "Information": RCSB_INFO[column],
+            "Source": (
+                "SIFTS weekly pdb_chain_uniprot.tsv.gz; PDB regular secondary "
+                "structure via https://www.ebi.ac.uk/pdbe/api/pdb/entry/secondary_structure; "
+                "entry pages at https://www.rcsb.org/structure/{PDB_ID}"
+            ),
+            "Granularity": (
+                "Protein summary; all chain-level elements are in "
+                "Human_Proteome_RCSB_Secondary_Structure.csv.gz"
+            ),
+        })
+
     return rows
 
 
@@ -172,7 +215,9 @@ def main():
         writer.writerows(rows)
 
     print(f"wrote {len(rows)} column descriptions -> {out_path}")
-    for family in ("eCLIP", "InterPro", "GO functional roles"):
+    for family in (
+        "eCLIP", "InterPro", "GO functional roles", "RCSB PDB secondary structure"
+    ):
         n = sum(1 for r in rows if r["Family"] == family)
         print(f"  {family:22s} {n:3d} columns")
 

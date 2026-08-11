@@ -3,6 +3,18 @@
 Code to compute every column of `Isoform_Post_Merge_PSLab_OpenTargets.csv` for
 any set of human proteins, consistent with how the existing rows were made.
 
+For a clean rebuild from current sources—including one guaranteed row per
+reviewed human Swiss-Prot protein, sequence-deduplicated NCBI RefSeq isoforms,
+revamped ENSG/ENST/ENSP mapping, independent feature sidecars, and PTMs—start
+with [`REBUILD_FROM_SCRATCH.md`](REBUILD_FROM_SCRATCH.md) and run:
+
+```bash
+python rebuild_from_scratch.py all --work-dir /path/to/rebuild
+```
+
+The older `run_all.py` workflow below remains available when exact compatibility
+with the historical 157-column table is the goal.
+
 The table's ten column families are covered by nine modules — `cider.py` serves
 three of them (whole sequence, per IDR, per domain). Each module is standalone
 with one documented entry point, so a family can be regenerated on its own, or
@@ -339,6 +351,53 @@ RBMXL2 and ZC3H11B/C.
 
 ---
 
+## RCSB PDB secondary structures
+
+`rcsb.py` and `stage_rcsb.py` add a current experimental-structure feature
+family for the full reviewed human proteome. The mapping is not inferred from
+gene symbols: the current weekly SIFTS `pdb_chain_uniprot.tsv.gz` release maps
+each PDB author chain and residue segment to a canonical UniProt accession.
+Regular secondary structures are the PDB archive's alpha-helix and beta-strand
+ranges exposed by the batch PDBe API; the PDB IDs link to the corresponding
+RCSB entry pages.
+
+```bash
+python stage_rcsb.py
+```
+
+The network phase is batched, gzip-cached and resumable under
+`EXPANSION_SCRATCH/rcsb_secondary_batches`. A current full run covers 20,420
+reviewed human proteins, of which 8,982 have at least one mapped experimental
+PDB entry (77,110 distinct entries in the 2026-08-03 SIFTS release).
+
+Outputs:
+
+- `Human_Proteome_RCSB_PDB_Summary.csv` — one row per reviewed protein, with
+  PDB IDs, author chains and ten compact coverage/element counts;
+- `Human_Proteome_RCSB_Secondary_Structure.csv.gz` — one row per
+  UniProt/PDB-chain/helix-or-strand observation, retaining PDB polymer
+  coordinates, depositor coordinates and mapped UniProt ranges;
+- `Human_Proteome_RCSB_Secondary_Structure.metadata.json` — releases, source
+  URLs, coordinate conventions and QC totals.
+
+Elements in affinity tags or other construct segments outside the SIFTS
+UniProt mapping are not attributed to the protein. Elements that cross a
+mapping boundary are retained and flagged `partial`; unequal-length mapping
+segments are never forced into approximate coordinates.
+
+Append the compact summary to the existing 242-column extended table with one
+streaming pass:
+
+```bash
+python append_rcsb_to_extended.py
+```
+
+The normalized element table remains separate and joins on `uniprot_id`; this
+avoids placing millions of structure observations into single spreadsheet
+cells and duplicating them across every isoform row.
+
+---
+
 ## Layout
 
 | File | Role |
@@ -346,12 +405,12 @@ RBMXL2 and ZC3H11B/C.
 | `schema.py` | the 157 columns, in order; validates itself against the master header |
 | `paths.py` | locations, interpreters, source-file provenance; `python paths.py` to check |
 | `setup_environment.py` | builds the two venvs and vendors the PSLab predictor |
-| `cider.py` `idr.py` `domains.py` `go.py` `cdcode.py` `string_ppi.py` `opentargets.py` `pslab.py` `identity.py` | one per feature family |
+| `cider.py` `idr.py` `domains.py` `go.py` `cdcode.py` `string_ppi.py` `opentargets.py` `pslab.py` `identity.py` `rcsb.py` | one per feature family |
 | `stage_*.py` | run one family over the whole target set, writing an intermediate |
 | `build_rows.py` | assemble intermediates into complete 157-column rows |
 | `append_to_master.py` | stream master + new rows into the expanded table |
 | `run_all.py` | drive every stage in order, under the right interpreter |
-| `validate.py` `validate_idr.py` `validate_pslab.py` | fidelity checks against stored values |
+| `validate.py` `validate_idr.py` `validate_pslab.py` `validate_rcsb.py` | fidelity and coordinate-mapping checks |
 
 Stages are resumable: each is skipped when its intermediate already exists.
 

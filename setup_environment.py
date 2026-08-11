@@ -61,16 +61,19 @@ METAPREDICT_VERSION = "3.0.2"
 SKLEARN_PIN = "scikit-learn==1.6"
 PSPRED_URL = "https://github.com/KULL-Centre/_2024_buelow_PSpred.git"
 
-BASE_REQUIREMENTS = ["localcider", "pandas", "numpy", "biopython", "openpyxl"]
+BASE_REQUIREMENTS = [
+    "localcider", "pandas", "numpy", "biopython", "openpyxl", "requests",
+    "pyarrow", "duckdb",
+]
 PSLAB_REQUIREMENTS = [SKLEARN_PIN, "MDAnalysis", "numba", "joblib",
-                      "biopython", "pandas", "numpy"]
+                      "biopython", "pandas", "numpy", "pyarrow"]
 
 # Windows forbids these in filenames; the metapredict sdist contains some.
 ILLEGAL_IN_FILENAME = re.compile(r'[|<>:"?*]')
 
 
 def run(command, **kwargs):
-    print("    $ " + " ".join(str(c) for c in command[:4]) + " ...")
+    print("    $ " + " ".join(str(c) for c in command[:4]) + " ...", flush=True)
     result = subprocess.run(command, **kwargs)
     if result.returncode != 0:
         raise SystemExit(f"command failed: {' '.join(map(str, command))}")
@@ -97,10 +100,14 @@ def make_venv(env_dir, force):
 
 
 def installed(python, module):
-    return subprocess.run(
-        [python, "-c", f"import {module}"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    ).returncode == 0
+    try:
+        return subprocess.run(
+            [python, "-c", f"import {module}"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=180,
+        ).returncode == 0
+    except subprocess.TimeoutExpired:
+        return False
 
 
 def fetch_metapredict_source(destination):
@@ -167,7 +174,8 @@ def setup_metapredict(force):
             disable_cython_extension(source)
             run([python, "-m", "pip", "install", "-q", source])
 
-    run([python, "-m", "pip", "install", "-q", "localcider", "numpy", "pandas"])
+    run([python, "-m", "pip", "install", "-q", "localcider", "numpy", "pandas",
+         "pyarrow"])
     return python
 
 
@@ -178,6 +186,10 @@ def setup_pslab(force):
         print("  requirements already installed")
     else:
         run([python, "-m", "pip", "install", "-q"] + PSLAB_REQUIREMENTS)
+    # Feature sidecars are Parquet even when the scientific model environment
+    # already existed before the clean rebuild pipeline added this dependency.
+    if not installed(python, "pyarrow"):
+        run([python, "-m", "pip", "install", "-q", "pyarrow"])
     return python
 
 
@@ -219,21 +231,27 @@ def verify(metapredict_python, pslab_python):
     if ok:
         print("  [x] base interpreter has localcider, pandas, numpy, biopython, openpyxl")
 
-    check = subprocess.run(
-        [metapredict_python, "-c",
-         "import metapredict, localcider; print(metapredict.__version__)"],
-        capture_output=True, text=True,
-    )
+    try:
+        check = subprocess.run(
+            [metapredict_python, "-c",
+             "import metapredict, localcider; print(metapredict.__version__)"],
+            capture_output=True, text=True, timeout=180,
+        )
+    except subprocess.TimeoutExpired:
+        check = subprocess.CompletedProcess([], 124, "", "import timed out")
     if check.returncode == 0:
         print(f"  [x] metapredict {check.stdout.strip().splitlines()[-1]}")
     else:
         print("  [ ] metapredict environment is not usable")
         ok = False
 
-    check = subprocess.run(
-        [pslab_python, "-c", "import sklearn, MDAnalysis; print(sklearn.__version__)"],
-        capture_output=True, text=True,
-    )
+    try:
+        check = subprocess.run(
+            [pslab_python, "-c", "import sklearn, MDAnalysis; print(sklearn.__version__)"],
+            capture_output=True, text=True, timeout=180,
+        )
+    except subprocess.TimeoutExpired:
+        check = subprocess.CompletedProcess([], 124, "", "import timed out")
     if check.returncode == 0:
         print(f"  [x] scikit-learn {check.stdout.strip().splitlines()[-1]}")
     else:
