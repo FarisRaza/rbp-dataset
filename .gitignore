@@ -10,11 +10,49 @@ vendor/
 envs/
 .venv/
 venv/
+.env/
+
+# Rebuild work directories and manually staged source directories.
+rebuild_output/
+sources/
+source-data/
+manual_sources/
+data/
 
 # Per-family intermediates. Hundreds of MB, fully regenerable by run_all.py,
 # and by default written to a temp directory rather than here.
 intermediates/
 *.pkl
+*.parquet
+*.arrow
+*.feather
+*.sqlite
+*.sqlite3
+
+# Downloaded biological sequence/annotation artifacts.
+*.fasta
+*.fa
+*.faa
+*.fna
+*.dat
+*.gtf
+*.gff
+*.gff3
+*.bed
+*.bed.gz
+*.tsv.gz
+*.zip
+*.tar
+*.tar.gz
+
+# Named large/manual sources used by the clean rebuild.
+9606.protein.links*.txt
+df_np_unique.interpro.tsv
+df_ptm.csv
+rbp_master_with_eclip.csv
+condensates.csv
+MISSING.csv
+CD-CODE_Files/
 
 # Generated outputs. These belong next to the data, not in the repo.
 Missing_Proteins_Rows.csv
@@ -25,6 +63,8 @@ Human_Proteome_RCSB_PDB_Summary.csv
 Human_Proteome_RCSB_Secondary_Structure.csv.gz
 Human_Proteome_RCSB_Secondary_Structure.metadata.json
 *_Extended_RCSB.csv
+human_proteome_isoforms_features.csv
+human_proteome_isoforms_features.csv.manifest.json
 
 __pycache__/
 *.py[cod]

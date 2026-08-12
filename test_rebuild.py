@@ -7,9 +7,13 @@ import tempfile
 import unittest
 
 import assemble_features
+import catalog_selection
+import export_catalog_fasta
+import generate_feature_reports
 import isoform_catalog
 import opentargets
 import ptm
+import rebuild_from_scratch
 from catalog_io import read_rows, write_feature_rows, write_rows
 from rebuild_schema import BASE_COLUMNS, LIST_COLUMNS
 
@@ -98,6 +102,107 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(
                 isoform["refseq_protein_ids"], ["NP_000002.1", "NP_000003.1"]
             )
+
+    def test_uniprot_selector_retains_canonical_and_mapped_isoforms(self):
+        rows = [
+            {
+                "protein_key": "sp:P00001", "uniprot_id": "P00001",
+                "uniprot_parent_ids": ["P00001"], "sequence": "MAAAA",
+                "sequence_sha256": isoform_catalog.sequence_sha256("MAAAA"),
+            },
+            {
+                "protein_key": "ncbi:1:abc", "uniprot_id": None,
+                "uniprot_parent_ids": ["P00001"], "sequence": "MAATA",
+                "sequence_sha256": isoform_catalog.sequence_sha256("MAATA"),
+            },
+            {
+                "protein_key": "sp:P00002", "uniprot_id": "P00002",
+                "uniprot_parent_ids": ["P00002"], "sequence": "MCCCC",
+                "sequence_sha256": isoform_catalog.sequence_sha256("MCCCC"),
+            },
+        ]
+        selected, audit = catalog_selection.select_rows(rows, proteins="p00001")
+        self.assertEqual(
+            {row["protein_key"] for row in selected},
+            {"sp:P00001", "ncbi:1:abc"},
+        )
+        self.assertEqual(audit["unmatched_identifiers"], [])
+
+    def test_fasta_selector_is_exact_sequence_specific(self):
+        with tempfile.TemporaryDirectory() as root:
+            fasta = os.path.join(root, "selected.fasta")
+            with open(fasta, "w", encoding="utf-8") as handle:
+                handle.write(">wanted\nMAATA\n")
+            rows = [
+                {
+                    "protein_key": "sp:P00001", "sequence": "MAAAA",
+                    "sequence_sha256": isoform_catalog.sequence_sha256("MAAAA"),
+                },
+                {
+                    "protein_key": "ncbi:1:abc", "sequence": "MAATA",
+                    "sequence_sha256": isoform_catalog.sequence_sha256("MAATA"),
+                },
+            ]
+            selected, audit = catalog_selection.select_rows(
+                rows, protein_fasta=fasta, strict=True
+            )
+            self.assertEqual([row["protein_key"] for row in selected], ["ncbi:1:abc"])
+            self.assertEqual(audit["matched_fasta_sequences"], 1)
+
+    def test_feature_dependencies_are_computed_but_not_requested(self):
+        requested = rebuild_from_scratch.parse_features("pslab,go_roles")
+        self.assertEqual(requested, ["go_roles", "pslab"])
+        self.assertEqual(
+            rebuild_from_scratch.execution_features(requested),
+            ["idr", "go", "go_roles", "pslab"],
+        )
+
+    def test_feature_report_writes_markdown_and_figures(self):
+        import pandas as pd
+
+        with tempfile.TemporaryDirectory() as root:
+            sidecar = os.path.join(root, "idr.parquet")
+            report_dir = os.path.join(root, "reports")
+            write_feature_rows(
+                [
+                    {"protein_key": "sp:P1", "IDR_count": 0},
+                    {"protein_key": "sp:P2", "IDR_count": 2},
+                ],
+                sidecar,
+                ["protein_key", "IDR_count"],
+            )
+            catalog = pd.DataFrame({"protein_key": ["sp:P1", "sp:P2"]})
+            report, summary = generate_feature_reports.write_family_report(
+                "idr", catalog, sidecar, report_dir
+            )
+            self.assertTrue(os.path.exists(report))
+            self.assertTrue(
+                os.path.exists(os.path.join(report_dir, "figures", "idr_coverage.png"))
+            )
+            self.assertEqual(summary["duplicate_protein_keys"], 0)
+            self.assertEqual(summary["rows_with_nonzero_primary_signal"], 1)
+
+    def test_catalog_fasta_export_uses_refseq_identifier(self):
+        with tempfile.TemporaryDirectory() as root:
+            catalog = os.path.join(root, "catalog.jsonl")
+            output = os.path.join(root, "isoforms.fasta")
+            row = {column: [] if column in LIST_COLUMNS else None for column in BASE_COLUMNS}
+            row.update(
+                protein_key="ncbi:1:abc", row_kind="ncbi_isoform",
+                sequence="MAATA", length_aa=5,
+                sequence_sha256=isoform_catalog.sequence_sha256("MAATA"),
+                refseq_protein_ids=["NP_000002.1"],
+                is_swissprot_canonical=False,
+            )
+            write_rows([row], catalog, BASE_COLUMNS)
+            manifest = export_catalog_fasta.export(
+                catalog, output, row_kind="isoform", identifier="refseq"
+            )
+            with open(output, encoding="ascii") as handle:
+                text = handle.read()
+            self.assertTrue(text.startswith(">NP_000002.1 "))
+            self.assertIn("MAATA", text)
+            self.assertEqual(manifest["sequence_count"], 1)
 
     def test_ptm_projection_drops_deleted_site(self):
         source = "MAKST"

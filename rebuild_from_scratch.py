@@ -21,6 +21,7 @@ import subprocess
 import sys
 
 import assemble_features
+import catalog_selection
 import ensembl_ids
 import isoform_catalog
 import ncbi_isoforms
@@ -51,6 +52,11 @@ DEFAULT_FEATURES = [
 ]
 OPTIONAL_FEATURES = ["rcsb"]
 ALL_FEATURES = DEFAULT_FEATURES + OPTIONAL_FEATURES
+FEATURE_DEPENDENCIES = {
+    "cider": ["idr", "domains"],
+    "pslab": ["idr"],
+    "go_roles": ["go"],
+}
 
 
 def layout(work_dir, opentargets_release=opentargets.DEFAULT_RELEASE):
@@ -98,6 +104,24 @@ def parse_features(value):
     return [family for family in ALL_FEATURES if family in selected]
 
 
+def execution_features(selected):
+    """Return the dependency closure needed to compute requested sidecars.
+
+    Dependencies are computed but are not automatically assembled into the
+    final table. Thus ``--features pslab`` runs IDR prediction as an input while
+    returning only the PSLab columns requested by the user.
+    """
+    needed = set(selected)
+    pending = list(selected)
+    while pending:
+        family = pending.pop()
+        for dependency in FEATURE_DEPENDENCIES.get(family, []):
+            if dependency not in needed:
+                needed.add(dependency)
+                pending.append(dependency)
+    return [family for family in ALL_FEATURES if family in needed]
+
+
 def download_stage(config, args, selected=None):
     os.makedirs(config["sources"], exist_ok=True)
     swissprot_source.download_human_reviewed(
@@ -137,6 +161,18 @@ def _ncbi_paths(config):
 
 def catalog_stage(config, args):
     if os.path.exists(config["catalog"]) and not args.force:
+        requested = catalog_selection.selection_spec(
+            args.proteins, args.protein_list, args.protein_fasta
+        )
+        existing = {}
+        if os.path.exists(config["catalog_audit"]):
+            with open(config["catalog_audit"], encoding="utf-8") as handle:
+                existing = json.load(handle).get("selection_spec", {})
+        if requested != existing:
+            raise RuntimeError(
+                "catalog exists but was built with a different protein selection; "
+                "use a different --work-dir or pass --force"
+            )
         print(f"catalog exists, keeping: {config['catalog']}")
         return config["catalog"]
     ncbi_paths = _ncbi_paths(config)
@@ -160,6 +196,19 @@ def catalog_stage(config, args):
         ensembl_index=ensembl_index,
         ensembl_release=ensembl_release,
     )
+    selection_spec = catalog_selection.selection_spec(
+        args.proteins, args.protein_list, args.protein_fasta
+    )
+    rows, selection_audit = catalog_selection.select_rows(
+        rows,
+        proteins=args.proteins,
+        protein_list=args.protein_list,
+        protein_fasta=args.protein_fasta,
+        strict=args.strict_selection,
+    )
+    audit["selection_spec"] = selection_spec
+    audit["selection"] = selection_audit
+    audit["output_catalog_rows"] = len(rows)
     write_rows(rows, config["catalog"], BASE_COLUMNS)
     os.makedirs(os.path.dirname(config["catalog_audit"]), exist_ok=True)
     with open(config["catalog_audit"], "w", encoding="utf-8") as handle:
@@ -168,15 +217,17 @@ def catalog_stage(config, args):
     return config["catalog"]
 
 
-def _feature_sources(config):
+def _feature_sources(config, args):
     def prefer(downloaded, historical):
         return downloaded if os.path.exists(downloaded) else historical
 
+    source_dir = os.path.abspath(args.source_dir or paths.KAPPEL)
+    choose = lambda override, filename: override or os.path.join(source_dir, filename)
     return {
         "swissprot": config["swissprot"],
-        "eclip_table": os.path.join(paths.KAPPEL, "rbp_master_with_eclip.csv"),
-        "interpro_tsv": os.path.join(paths.KAPPEL, "df_np_unique.interpro.tsv"),
-        "ptm_csv": os.path.join(paths.KAPPEL, "df_ptm.csv"),
+        "eclip_table": choose(args.eclip_table, "rbp_master_with_eclip.csv"),
+        "interpro_tsv": choose(args.interpro_tsv, "df_np_unique.interpro.tsv"),
+        "ptm_csv": choose(args.ptm_csv, "df_ptm.csv"),
         "opentargets_associations": prefer(
             config["opentargets_associations"], paths.OT_ASSOCIATIONS
         ),
@@ -186,10 +237,12 @@ def _feature_sources(config):
         "opentargets_diseases": prefer(
             config["opentargets_diseases"], paths.OT_DISEASES
         ),
-        "cdcode_root": paths.KAPPEL,
-        "string_links": paths.STRING_LINKS,
-        "pspred_repo": paths.PSPRED_REPO,
-        "rcsb_summary": paths.RCSB_SUMMARY,
+        "cdcode_root": args.cdcode_root or source_dir,
+        "string_links": choose(args.string_links, "9606.protein.links.v12.0.txt"),
+        "pspred_repo": args.pspred_repo or paths.PSPRED_REPO,
+        "rcsb_summary": choose(
+            args.rcsb_summary, "Human_Proteome_RCSB_PDB_Summary.csv"
+        ),
     }
 
 
@@ -267,9 +320,13 @@ def _feature_command(family, config, sources):
 
 def features_stage(config, args, selected):
     os.makedirs(config["features"], exist_ok=True)
-    sources = _feature_sources(config)
+    sources = _feature_sources(config, args)
     completed = []
-    for family in selected:
+    planned = execution_features(selected)
+    if planned != selected:
+        added = [family for family in planned if family not in selected]
+        print(f"computing dependency sidecars (not assembled): {', '.join(added)}")
+    for family in planned:
         missing = [
             name for name in SOURCE_REQUIREMENTS.get(family, [])
             if not os.path.exists(sources[name])
@@ -317,6 +374,9 @@ def write_run_manifest(config, args, selected):
         "include_orphan_refseq": args.include_orphan_refseq,
         "ensembl_exact_sequence_fallback": not args.no_ensembl_fallback,
         "opentargets_release": args.opentargets_release,
+        "selection_spec": catalog_selection.selection_spec(
+            args.proteins, args.protein_list, args.protein_fasta
+        ),
         "feature_sidecars": {
             family: os.path.join(config["features"], family + ".parquet")
             for family in selected
@@ -341,7 +401,30 @@ def parser():
         help="default, all, or comma-separated families; add rcsb with --features all",
     )
     p.add_argument("--output", help="final .parquet or .csv path")
+    p.add_argument(
+        "--proteins",
+        help="comma/space-separated identifiers; UniProt parents retain mapped isoforms",
+    )
+    p.add_argument("--protein-list", help="text file containing protein identifiers")
+    p.add_argument(
+        "--protein-fasta", help="retain catalog rows with exact sequence matches"
+    )
+    p.add_argument(
+        "--strict-selection", action="store_true",
+        help="fail if any requested identifier or FASTA sequence is unmatched",
+    )
     p.add_argument("--datasets-exe", help="path to NCBI datasets executable")
+    p.add_argument(
+        "--source-dir",
+        help="directory holding user-supplied feature sources (see DATA_SOURCES.md)",
+    )
+    p.add_argument("--eclip-table")
+    p.add_argument("--interpro-tsv")
+    p.add_argument("--ptm-csv")
+    p.add_argument("--cdcode-root")
+    p.add_argument("--string-links")
+    p.add_argument("--pspred-repo")
+    p.add_argument("--rcsb-summary")
     p.add_argument(
         "--opentargets-release",
         default=opentargets.DEFAULT_RELEASE,

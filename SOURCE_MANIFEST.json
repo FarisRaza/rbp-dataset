@@ -1,0 +1,93 @@
+{
+  "schema_version": 1,
+  "policy": "Source data and generated tables are not committed to Git.",
+  "sources": [
+    {
+      "id": "uniprot_swissprot_human",
+      "families": ["catalog", "domains", "go"],
+      "acquisition": "automatic",
+      "default_work_path": "sources/human_reviewed_swissprot.dat",
+      "url": "https://rest.uniprot.org/uniprotkb/stream?format=txt&query=%28organism_id%3A9606%29+AND+%28reviewed%3Atrue%29"
+    },
+    {
+      "id": "ncbi_human_gene_package",
+      "families": ["catalog"],
+      "acquisition": "automatic",
+      "default_work_path": "sources/ncbi_human_gene.zip",
+      "url": "https://www.ncbi.nlm.nih.gov/datasets/docs/v2/how-tos/genes/download-gene-data-package/"
+    },
+    {
+      "id": "ensembl_current_human_peptides",
+      "families": ["catalog"],
+      "acquisition": "automatic",
+      "default_work_path": "sources/Homo_sapiens.GRCh38.pep.all.fa.gz",
+      "url": "https://ftp.ensembl.org/pub/current_fasta/homo_sapiens/pep/Homo_sapiens.GRCh38.pep.all.fa.gz"
+    },
+    {
+      "id": "opentargets_release",
+      "families": ["opentargets"],
+      "acquisition": "automatic",
+      "default_work_path": "sources/opentargets/25.12",
+      "url": "https://platform-docs.opentargets.org/data-access/datasets"
+    },
+    {
+      "id": "eclip_compilation",
+      "families": ["eclip"],
+      "acquisition": "user_prepared",
+      "default_manual_filename": "rbp_master_with_eclip.csv",
+      "override": "--eclip-table",
+      "instructions": "eclip_source_pipeline/README.md"
+    },
+    {
+      "id": "interproscan_tsv",
+      "families": ["interpro"],
+      "acquisition": "user_computed",
+      "default_manual_filename": "df_np_unique.interpro.tsv",
+      "override": "--interpro-tsv",
+      "url": "https://interproscan-docs.readthedocs.io/en/v5/HowToDownload.html"
+    },
+    {
+      "id": "iptmnet_wide_snapshot",
+      "families": ["ptm"],
+      "acquisition": "project_snapshot_or_new_export",
+      "default_manual_filename": "df_ptm.csv",
+      "override": "--ptm-csv",
+      "known_gap": "The available raw ptm.txt is truncated and cannot recreate the complete wide snapshot.",
+      "url": "https://research.bioinformatics.udel.edu/iptmnet/api/doc/"
+    },
+    {
+      "id": "cdcode_snapshot",
+      "families": ["cdcode"],
+      "acquisition": "project_snapshot",
+      "default_manual_filename": "condensates.csv + MISSING.csv + CD-CODE_Files/",
+      "override": "--cdcode-root",
+      "known_gap": "No stable keyed bulk export was used; preserve the validated project snapshot.",
+      "url": "https://cd-code.org"
+    },
+    {
+      "id": "string_human_links_v12",
+      "families": ["string"],
+      "acquisition": "manual_download",
+      "default_manual_filename": "9606.protein.links.v12.0.txt",
+      "override": "--string-links",
+      "url": "https://version-12-0.string-db.org/cgi/download"
+    },
+    {
+      "id": "pspred_models",
+      "families": ["pslab"],
+      "acquisition": "automatic_setup",
+      "default_manual_filename": "vendor/_2024_buelow_PSpred",
+      "override": "--pspred-repo",
+      "url": "https://github.com/KULL-Centre/_2024_buelow_PSpred"
+    },
+    {
+      "id": "rcsb_summary",
+      "families": ["rcsb"],
+      "acquisition": "optional_user_computed",
+      "default_manual_filename": "Human_Proteome_RCSB_PDB_Summary.csv",
+      "override": "--rcsb-summary",
+      "instructions": "python stage_rcsb.py",
+      "url": "https://www.ebi.ac.uk/pdbe/docs/sifts/quick.html"
+    }
+  ]
+}
