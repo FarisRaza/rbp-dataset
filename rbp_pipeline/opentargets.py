@@ -90,6 +90,12 @@ DISEASE_LONG_COLUMNS = [
 ]
 
 
+def normalize_ensg(value):
+    """Return a versionless Ensembl gene identifier for Open Targets joins."""
+    text = str(value or "").strip()
+    return text.split(".", 1)[0] if text else ""
+
+
 def _parquet_files(path):
     """Return Parquet files represented by a file or Spark-style directory."""
     if os.path.isfile(path):
@@ -522,7 +528,11 @@ def clean_columns_for(
     ensg_list, expression, associations, disease_metadata, release=DEFAULT_RELEASE
 ):
     """Build the clean Open Targets columns for one protein/isoform row."""
-    ensgs = list(dict.fromkeys(ensg_list or []))
+    ensgs = list(dict.fromkeys(
+        normalized
+        for value in (ensg_list or [])
+        if (normalized := normalize_ensg(value))
+    ))
     tissue_records = [record for ensg in ensgs for record in expression.get(ensg, [])]
     disease_records = [
         record

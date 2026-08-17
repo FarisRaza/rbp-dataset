@@ -5,6 +5,8 @@ partners for ENSP identifiers represented in the selected catalog. Partner
 scores remain grouped by query ENSP, with a conservative UniProt translation
 when one parent mapping is unambiguous.
 
+Column definitions: [STRING protein interactions](../COLUMN_REFERENCE.md#string-protein-interactions).
+
 Because the set of represented proteins affects which partners can be
 translated into in-dataset UniProt IDs, subset and full-proteome runs need not
 produce identical translated-partner coverage.
@@ -15,3 +17,5 @@ unique.
 
 The report plots STRING field coverage and the number of retained ENSP partners
 per row. Record STRING version with every data release.
+
+Run `python qc/check_string.py --work-dir WORK_DIR`.

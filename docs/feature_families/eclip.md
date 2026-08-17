@@ -5,6 +5,8 @@
 as separate evidence families to avoid treating overlapping experiments as
 independent replication.
 
+Column definitions: [eCLIP and related CLIP evidence](../COLUMN_REFERENCE.md#eclip-and-related-clip-evidence).
+
 The source table is joined by gene symbol and broadcast to protein isoforms.
 The scope column distinguishes measured genes from proteins lacking a supplied
 CLIP record.
@@ -16,3 +18,5 @@ when their source has data; ENCODE and ENCORI columns are not pooled.
 The generated report shows per-column/source coverage and a per-row CLIP signal
 distribution. `summarize_eclip.py` additionally creates region-composition and
 ENCODE-versus-ENCORI comparison figures for the historical source table.
+
+Run `python qc/check_eclip.py --work-dir WORK_DIR`.

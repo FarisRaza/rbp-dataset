@@ -3,6 +3,8 @@
 `annotate_rcsb.py` joins compact SIFTS/PDBe summaries including PDB and chain
 counts, mapped residue coverage, and secondary-structure composition.
 
+Column definitions: [RCSB/PDB structures](../COLUMN_REFERENCE.md#rcsbpdb-structures).
+
 This optional annotation is applied only to canonical Swiss-Prot rows because
 experimental structures are mapped to those sequences; it is not inherited to
 sequence-distinct NCBI isoforms.
@@ -13,3 +15,5 @@ canonical-only scope is respected.
 
 The report plots structural-field coverage and PDB mappings per row. Sparse
 coverage is biologically expected and should not be treated as pipeline failure.
+
+Run `python qc/check_rcsb.py --work-dir WORK_DIR`.

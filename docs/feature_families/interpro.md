@@ -4,6 +4,8 @@
 output and joins hits through RefSeq protein accessions. It retains signature
 names, ranges, InterPro accessions, member databases, GO terms, and hit counts.
 
+Column definitions: [InterProScan](../COLUMN_REFERENCE.md#interproscan).
+
 The default parser retains domain-model databases and excludes disorder/coils
 and family-only classifications already represented elsewhere.
 
@@ -14,3 +16,5 @@ accessions are recorded; InterProScan version is preserved.
 The generated report plots annotation coverage and retained hit counts. Release
 or member-database changes can shift counts and should be noted when comparing
 runs.
+
+Run `python qc/check_interpro.py --work-dir WORK_DIR`.

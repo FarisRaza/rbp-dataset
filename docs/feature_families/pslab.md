@@ -4,6 +4,8 @@
 and stores sequence features, predicted free energy, and saturation
 concentrations in the same order as `IDR_discrete_seq`.
 
+Column definitions: [PSLab phase-separation predictions](../COLUMN_REFERENCE.md#pslab-phase-separation-predictions).
+
 The family requires the isolated scikit-learn 1.6 environment and model files
 installed by `setup_environment.py`; predictions are sequence- and IDR-specific.
 
@@ -13,3 +15,5 @@ version constraints are satisfied.
 
 The report plots output coverage and the number/distribution of available
 per-IDR predictions. Compare free energies only under the same model release.
+
+Run `python qc/check_pslab.py --work-dir WORK_DIR`.

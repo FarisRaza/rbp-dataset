@@ -53,7 +53,8 @@ within the cell.
 build_dataset.py          one master command
 setup_environment.py      installs metapredict and PSLab environments
 rbp_pipeline/             current catalog, feature-family, and assembly code
-docs/feature_families/    interpretation and sanity-check documentation
+docs/                     column reference, architecture, and family guides
+qc/                       one runnable exploration/check script per family
 eclip_source_pipeline/    raw ENCODE/ENCORI/POSTAR/Skipper preparation
 legacy/                   obsolete append-to-an-existing-CSV workflow
 tests/                    fast offline tests
@@ -234,8 +235,24 @@ python rbp_pipeline/annotate_interpro.py \
 
 Scientific implementation and source notes live in the corresponding module,
 such as `rbp_pipeline/interpro.py` or `rbp_pipeline/eclip.py`.
+Definitions for the output fields are collected in
+[docs/COLUMN_REFERENCE.md](docs/COLUMN_REFERENCE.md).
 
 ## Sanity-check reports
+
+Run one family directly:
+
+```bash
+python qc/check_idr.py --work-dir /data/human-proteome-build
+python qc/check_eclip.py --work-dir /data/human-proteome-build
+python qc/check_opentargets.py --work-dir /data/human-proteome-build
+```
+
+Each command writes a Markdown report, coverage/distribution figures, and
+family-specific PASS/FAIL checks. Add `--strict` to return a nonzero exit status
+when an invariant fails. All commands are listed in [qc/README.md](qc/README.md).
+
+To generate reports for every available feature sidecar in one run:
 
 ```bash
 python rbp_pipeline/generate_feature_reports.py \

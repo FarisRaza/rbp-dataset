@@ -6,6 +6,8 @@ build, canonical rows are joined directly and sequence-distinct NCBI isoform
 rows remain null because these observations belong to the canonical UniProt
 sequence. Alignment projection remains available as an explicit opt-in utility
 for analyses that want inferred rather than directly sourced isoform sites.
+Direct canonical sites are residue-validated against the current Swiss-Prot
+sequence; stale snapshot coordinates are dropped and counted in provenance.
 
 The companion ``ptm.txt`` is a raw tab-separated site export with one-based
 site labels such as ``K117``.  :func:`load_raw_site_table` can parse that form,
@@ -283,8 +285,16 @@ def annotate_rows(rows, canonical_annotations, project_isoforms=True):
                     ),
                 }
                 continue
-            direct = _merge_annotations([annotation])
-            direct["ptm_projection_methods"] = ["direct_canonical_UniProt_join"]
+            # The archived PTM snapshot can predate the current Swiss-Prot
+            # sequence release. Validate every stored residue before presenting
+            # its coordinate as a current canonical annotation; stale sites are
+            # dropped and counted in the existing audit field.
+            direct = project_annotation(
+                annotation, row["sequence"], row["sequence"]
+            )
+            direct["ptm_projection_methods"] = [
+                "direct_canonical_UniProt_join_residue_validated"
+            ]
             projected.append(direct)
             sources.append(accession)
         else:

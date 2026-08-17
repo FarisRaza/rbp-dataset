@@ -55,6 +55,8 @@ MISSING.csv
 CD-CODE_Files/
 
 # Generated outputs. These belong next to the data, not in the repo.
+reports/
+report_manifest.json
 Missing_Proteins_Rows.csv
 *_Extended.csv
 *_Expanded.csv

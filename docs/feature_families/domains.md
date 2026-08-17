@@ -4,6 +4,8 @@
 coordinates and their sequences from the same Swiss-Prot flat file used to
 build canonical rows.
 
+Column definitions: [curated UniProt domains](../COLUMN_REFERENCE.md#curated-uniprot-domains).
+
 These coordinates are canonical-sequence-specific and are not broadcast to
 sequence-distinct NCBI isoforms. `uniprot_domain_annotation_scope` makes this
 distinction explicit.
@@ -14,3 +16,5 @@ discrete sequences; all catalog keys are retained.
 
 The generated report plots domain-field coverage and the distribution of domain
 occurrences per row. Canonical-only coverage is expected, not missing data.
+
+Run `python qc/check_domains.py --work-dir WORK_DIR`.

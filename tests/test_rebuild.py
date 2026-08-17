@@ -249,6 +249,30 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(summary["duplicate_protein_keys"], 0)
             self.assertEqual(summary["rows_with_nonzero_primary_signal"], 1)
 
+    def test_opentargets_qc_rejects_catastrophic_zero_coverage(self):
+        import pandas as pd
+
+        catalog = pd.DataFrame({
+            "protein_key": [f"sp:P{index}" for index in range(100)],
+            "ensembl_gene_ids": [[f"ENSG{index}"] for index in range(100)],
+        })
+        sidecar = pd.DataFrame({
+            "protein_key": catalog["protein_key"],
+            "opentargets_tissue_expression": ["[]"] * 100,
+            "opentargets_expression_tissue_count": [0] * 100,
+            "opentargets_disease_associations": ["[]"] * 100,
+            "opentargets_disease_count": [0] * 100,
+            "opentargets_release": ["test"] * 100,
+        })
+        checks = generate_feature_reports._family_sanity_checks(
+            "opentargets", catalog, sidecar
+        )
+        coverage = next(
+            check for check in checks
+            if check["check"] == "Open Targets has biological coverage"
+        )
+        self.assertEqual(coverage["status"], "FAIL")
+
     def test_catalog_fasta_export_uses_refseq_identifier(self):
         with tempfile.TemporaryDirectory() as root:
             catalog = os.path.join(root, "catalog.jsonl")
@@ -285,6 +309,28 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(projected["ptm_acetylation"], 0)
         self.assertEqual(projected["ptm_phosphorylation_positions"], [2])
         self.assertEqual(projected["ptm_projection_dropped_sites"], 1)
+
+    def test_ptm_direct_join_drops_sites_stale_against_current_sequence(self):
+        annotation = ptm.empty_annotation()
+        annotation["ptm_phosphorylation"] = 1
+        annotation["ptm_phosphorylation_positions"] = [1, 2]
+        annotation["ptm_phosphorylation_residues"] = ["T", "S"]
+        rows = [{
+            "protein_key": "sp:P1",
+            "row_kind": "swissprot_canonical",
+            "uniprot_id": "P1",
+            "sequence": "MAS",
+        }]
+        result = list(ptm.annotate_rows(
+            rows, {"P1": annotation}, project_isoforms=False
+        ))[0]
+        self.assertEqual(result["ptm_phosphorylation_positions"], [2])
+        self.assertEqual(result["ptm_phosphorylation_residues"], ["S"])
+        self.assertEqual(result["ptm_projection_dropped_sites"], 1)
+        self.assertEqual(
+            result["ptm_projection_methods"],
+            ["direct_canonical_UniProt_join_residue_validated"],
+        )
 
     def test_duckdb_assembly_preserves_catalog_rows(self):
         with tempfile.TemporaryDirectory() as root:
@@ -406,6 +452,17 @@ class OpenTargetsTests(unittest.TestCase):
         self.assertEqual(result["opentargets_disease_count"], 1)
         self.assertEqual(result["opentargets_release"], "test")
         self.assertEqual(set(result), set(opentargets.COLUMNS))
+
+    def test_opentargets_join_normalizes_versioned_ensg(self):
+        expression = {"ENSG1": [{
+            "ensembl_gene_id": "ENSG1", "tissue_id": "UBERON_1",
+            "tissue_name": "brain",
+        }]}
+        result = opentargets.clean_columns_for(
+            ["ENSG1.7"], expression, {}, {}, release="test"
+        )
+        self.assertEqual(result["opentargets_expression_tissue_count"], 1)
+        self.assertEqual(opentargets.normalize_ensg("ENSG1.7"), "ENSG1")
 
     def test_disk_store_keeps_clean_family_runnable_in_bounded_memory(self):
         with tempfile.TemporaryDirectory() as root:

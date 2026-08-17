@@ -323,9 +323,10 @@ def run_opentargets(
     _require(opentargets_diseases, "--opentargets-diseases")
     release = opentargets_release or opentargets.DEFAULT_RELEASE
     wanted = {
-        identifier
+        normalized
         for row in rows
         for identifier in row.get("ensembl_gene_ids") or []
+        if (normalized := opentargets.normalize_ensg(identifier))
     }
     diseases = opentargets.load_disease_metadata(opentargets_diseases)
     store = opentargets.build_store(
@@ -348,7 +349,11 @@ def run_opentargets(
                 opentargets.DISEASE_LONG_COLUMNS,
             )
         for row in rows:
-            ensg = row.get("ensembl_gene_ids") or []
+            ensg = [
+                normalized
+                for identifier in row.get("ensembl_gene_ids") or []
+                if (normalized := opentargets.normalize_ensg(identifier))
+            ]
             yield {
                 "protein_key": row["protein_key"],
                 **opentargets.clean_columns_from_store(

@@ -8,9 +8,11 @@ one family even when they intentionally requested only a subset of features.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
+import re
 import statistics
 
 import pandas as pd
@@ -57,6 +59,8 @@ def _read_table(path):
 def _decode(value):
     if value is None or (isinstance(value, float) and math.isnan(value)):
         return None
+    if hasattr(value, "tolist") and not isinstance(value, (str, bytes)):
+        value = value.tolist()
     if isinstance(value, str):
         stripped = value.strip()
         if not stripped:
@@ -67,6 +71,657 @@ def _decode(value):
             except json.JSONDecodeError:
                 return value
     return value
+
+
+def _as_list(value):
+    value = _decode(value)
+    if value is None:
+        return []
+    if isinstance(value, tuple):
+        return list(value)
+    return value if isinstance(value, list) else []
+
+
+def _as_dict(value):
+    value = _decode(value)
+    return value if isinstance(value, dict) else {}
+
+
+def _number(value):
+    value = _decode(value)
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _nonnull(value):
+    return _decode(value) is not None
+
+
+def _add_check(checks, name, failures, checked, expectation):
+    checks.append({
+        "check": name,
+        "status": "PASS" if failures == 0 else "FAIL",
+        "failed_rows": int(failures),
+        "checked_rows": int(checked),
+        "expectation": expectation,
+    })
+
+
+def _parallel_list_failures(frame, columns):
+    failures = 0
+    checked = 0
+    available = [column for column in columns if column in frame]
+    if len(available) < 2:
+        return failures, checked
+    for record in frame[available].itertuples(index=False, name=None):
+        decoded = [_decode(value) for value in record]
+        present = [value for value in decoded if value is not None]
+        if not present:
+            continue
+        checked += 1
+        if any(not isinstance(value, list) for value in present):
+            failures += 1
+            continue
+        if len({len(value) for value in present}) != 1:
+            failures += 1
+    return failures, checked
+
+
+def _canonical_leakage(frame, catalog_by_key, columns):
+    failures = 0
+    checked = 0
+    available = [column for column in columns if column in frame]
+    for record in frame[["protein_key"] + available].to_dict("records"):
+        meta = catalog_by_key.get(str(record["protein_key"]), {})
+        if meta.get("row_kind") == "swissprot_canonical":
+            continue
+        checked += 1
+        if any(_nonnull(record.get(column)) for column in available):
+            failures += 1
+    return failures, checked
+
+
+def _family_sanity_checks(family, catalog, frame):
+    """Return machine-readable hard checks for one feature sidecar."""
+    catalog_keys = set(catalog["protein_key"].astype(str))
+    sidecar_keys = set(frame["protein_key"].astype(str))
+    catalog_by_key = {
+        str(record["protein_key"]): record
+        for record in catalog.to_dict("records")
+    }
+    checks = []
+    _add_check(
+        checks, "protein_key is unique", int(frame["protein_key"].duplicated().sum()),
+        len(frame), "zero duplicate sidecar keys",
+    )
+    _add_check(
+        checks, "all catalog rows are represented",
+        len(catalog_keys.difference(sidecar_keys)), len(catalog_keys),
+        "zero catalog keys missing from the sidecar",
+    )
+    _add_check(
+        checks, "sidecar contains no foreign rows",
+        len(sidecar_keys.difference(catalog_keys)), len(sidecar_keys),
+        "zero sidecar keys outside the catalog",
+    )
+
+    if family == "idr":
+        geometry_failures = 0
+        coordinate_failures = 0
+        checked = 0
+        for record in frame.to_dict("records"):
+            meta = catalog_by_key.get(str(record["protein_key"]), {})
+            length = _number(meta.get("length_aa"))
+            if length is None:
+                continue
+            checked += 1
+            idr_count = int(_number(record.get("IDR_count")) or 0)
+            fold_count = int(_number(record.get("FOLD_count")) or 0)
+            idr_ranges = _as_list(record.get("IDR_range"))
+            fold_ranges = _as_list(record.get("FOLD_range"))
+            idr_sequences = _as_list(record.get("IDR_discrete_seq"))
+            fold_sequences = _as_list(record.get("FOLD_discrete_seq"))
+            idr_total = _number(record.get("IDR_total_size"))
+            fold_total = _number(record.get("FOLD_total_size"))
+            if (
+                len(idr_ranges) != idr_count
+                or len(idr_sequences) != idr_count
+                or len(fold_ranges) != fold_count
+                or len(fold_sequences) != fold_count
+                or idr_total is None or fold_total is None
+                or int(idr_total + fold_total) != int(length)
+            ):
+                geometry_failures += 1
+            ranges = idr_ranges + fold_ranges
+            valid = all(
+                isinstance(item, list) and len(item) == 2
+                and _number(item[0]) is not None and _number(item[1]) is not None
+                and 0 <= _number(item[0]) <= _number(item[1]) <= length
+                for item in ranges
+            )
+            if not valid:
+                coordinate_failures += 1
+        _add_check(
+            checks, "IDR/fold counts and lengths agree", geometry_failures, checked,
+            "counts match list lengths and IDR_total_size + FOLD_total_size equals sequence length",
+        )
+        _add_check(
+            checks, "IDR/fold coordinates are in bounds", coordinate_failures, checked,
+            "all zero-based half-open ranges lie within the sequence",
+        )
+
+    elif family == "cider":
+        bounded = {
+            "FCR": (0.0, 1.0),
+            "NCPR": (-1.0, 1.0),
+            "fraction_negative": (0.0, 1.0),
+            "fraction_positive": (0.0, 1.0),
+            "fraction_expanding": (0.0, 1.0),
+            "fraction_disorder_promoting": (0.0, 1.0),
+        }
+        failures = 0
+        checked = 0
+        for column, (lower, upper) in bounded.items():
+            if column not in frame:
+                continue
+            for value in frame[column]:
+                number = _number(value)
+                if number is None:
+                    continue
+                checked += 1
+                failures += int(not lower <= number <= upper)
+        _add_check(
+            checks, "whole-sequence CIDER fractions are bounded", failures, checked,
+            "fractions are in [0,1] and NCPR is in [-1,1]",
+        )
+        idr_columns = [column for column in frame if column.startswith("IDR_")]
+        failures, checked = _parallel_list_failures(frame, idr_columns)
+        _add_check(
+            checks, "per-IDR CIDER lists are parallel", failures, checked,
+            "all populated IDR metric lists have equal length within a row",
+        )
+        domain_columns = [column for column in frame if column.startswith("Domains_")]
+        failures = 0
+        checked = 0
+        for record in frame[domain_columns].to_dict("records"):
+            decoded = [_decode(record[column]) for column in domain_columns]
+            present = [value for value in decoded if value is not None]
+            if not present:
+                continue
+            checked += 1
+            if any(not isinstance(value, dict) for value in present):
+                failures += 1
+                continue
+            key_sets = [set(value) for value in present]
+            if len({tuple(sorted(keys)) for keys in key_sets}) != 1:
+                failures += 1
+                continue
+            for domain in key_sets[0]:
+                values = [value[domain] for value in present]
+                if any(not isinstance(value, list) for value in values) \
+                        or len({len(value) for value in values}) != 1:
+                    failures += 1
+                    break
+        _add_check(
+            checks, "per-domain CIDER dictionaries are parallel", failures, checked,
+            "domain keys and per-region metric-list lengths agree within a row",
+        )
+
+    elif family == "domains":
+        geometry = [
+            "Domains", "Domains_count", "Domains_avg_size", "Domains_total_size",
+            "Domains_range", "Domains_discrete_seq", "Domains_concat_seq",
+        ]
+        failures, checked = _canonical_leakage(frame, catalog_by_key, geometry)
+        _add_check(
+            checks, "UniProt domain coordinates stay canonical-only", failures, checked,
+            "all sequence-distinct isoform domain fields are null",
+        )
+        failures = 0
+        coordinate_failures = 0
+        checked = 0
+        for record in frame.to_dict("records"):
+            meta = catalog_by_key.get(str(record["protein_key"]), {})
+            if meta.get("row_kind") != "swissprot_canonical":
+                continue
+            counts = _as_dict(record.get("Domains_count"))
+            ranges = _as_dict(record.get("Domains_range"))
+            sequences = _as_dict(record.get("Domains_discrete_seq"))
+            length = _number(meta.get("length_aa"))
+            checked += 1
+            keys = set(counts) | set(ranges) | set(sequences)
+            for name in keys:
+                named_ranges = _as_list(ranges.get(name))
+                named_sequences = _as_list(sequences.get(name))
+                if int(_number(counts.get(name)) or 0) != len(named_ranges) \
+                        or len(named_ranges) != len(named_sequences):
+                    failures += 1
+                    break
+            if length is not None:
+                valid = all(
+                    isinstance(item, list) and len(item) == 2
+                    and _number(item[0]) is not None and _number(item[1]) is not None
+                    and 0 <= _number(item[0]) <= _number(item[1]) <= length
+                    and len(str(sequence)) == int(_number(item[1]) - _number(item[0]))
+                    for name in keys
+                    for item, sequence in zip(
+                        _as_list(ranges.get(name)), _as_list(sequences.get(name))
+                    )
+                )
+                coordinate_failures += int(not valid)
+        _add_check(
+            checks, "domain counts match ranges and sequences", failures, checked,
+            "per-name counts equal range and discrete-sequence list lengths",
+        )
+        _add_check(
+            checks, "domain coordinates and sequence slices agree", coordinate_failures, checked,
+            "ranges are in bounds and their lengths equal stored domain-sequence lengths",
+        )
+
+    elif family == "go":
+        failures = 0
+        id_failures = 0
+        checked = 0
+        for record in frame.to_dict("records"):
+            for aspect in "CPF":
+                values = [
+                    _as_list(record.get(f"{aspect}_ids")),
+                    _as_list(record.get(f"{aspect}_descriptions")),
+                    _as_list(record.get(f"{aspect}_evidence")),
+                ]
+                checked += 1
+                failures += int(len({len(value) for value in values}) != 1)
+                id_failures += sum(
+                    not re.fullmatch(r"GO:\d{7}", str(identifier))
+                    for identifier in values[0]
+                )
+        _add_check(
+            checks, "GO ID/name/evidence lists are parallel", failures, checked,
+            "equal list lengths within each GO aspect",
+        )
+        _add_check(
+            checks, "GO identifiers are well formed", id_failures, checked,
+            "every populated identifier matches GO: followed by seven digits",
+        )
+        failures, checked = _canonical_leakage(
+            frame, catalog_by_key,
+            [f"{aspect}_{suffix}" for aspect in "CPF" for suffix in ("ids", "descriptions", "evidence")],
+        )
+        _add_check(
+            checks, "UniProt GO annotations stay canonical-only", failures, checked,
+            "all sequence-distinct isoform GO fields are null",
+        )
+
+    elif family == "eclip":
+        failures = 0
+        checked = 0
+        for column in [name for name in frame if "_frac_" in name.lower()]:
+            for value in frame[column]:
+                number = _number(value)
+                if number is None:
+                    continue
+                checked += 1
+                failures += int(not 0 <= number <= 1)
+        _add_check(
+            checks, "CLIP regional fractions are bounded", failures, checked,
+            "every populated *_frac_* value is in [0,1]",
+        )
+        failures = 0
+        checked = 0
+        allowed = {"", "0", "1", "false", "true", "none", "nan"}
+        for column in [name for name in frame if name.startswith("has_")]:
+            for value in frame[column]:
+                checked += 1
+                failures += int(str(value).strip().lower() not in allowed)
+        _add_check(
+            checks, "CLIP availability flags are Boolean-like", failures, checked,
+            "has_* values are empty/unknown or Boolean",
+        )
+
+    elif family == "interpro":
+        failures = 0
+        checked = 0
+        for record in frame.to_dict("records"):
+            ranges = _as_dict(record.get("InterPro_range"))
+            observed = sum(len(_as_list(value)) for value in ranges.values())
+            expected = _number(record.get("InterPro_n_hits"))
+            if expected is None:
+                continue
+            checked += 1
+            failures += int(observed != int(expected))
+        _add_check(
+            checks, "InterPro hit counts match retained ranges", failures, checked,
+            "InterPro_n_hits equals the total number of stored range records",
+        )
+        failures = 0
+        checked = 0
+        for record in frame.to_dict("records"):
+            meta = catalog_by_key.get(str(record["protein_key"]), {})
+            length = _number(meta.get("length_aa"))
+            if length is None:
+                continue
+            checked += 1
+            ranges = [
+                item for values in _as_dict(record.get("InterPro_range")).values()
+                for item in _as_list(values)
+            ]
+            valid = all(
+                isinstance(item, list) and len(item) == 2
+                and _number(item[0]) is not None and _number(item[1]) is not None
+                and 0 <= _number(item[0]) <= _number(item[1]) <= length
+                for item in ranges
+            )
+            failures += int(not valid)
+        _add_check(
+            checks, "InterPro coordinates are in bounds", failures, checked,
+            "all retained zero-based half-open ranges lie within the row sequence",
+        )
+
+    elif family == "ptm":
+        ptm_types = sorted({
+            column[len("ptm_"):-len("_positions")]
+            for column in frame if column.startswith("ptm_") and column.endswith("_positions")
+        })
+        failures = 0
+        checked = 0
+        for record in frame.to_dict("records"):
+            for ptm_type in ptm_types:
+                indicator = _number(record.get(f"ptm_{ptm_type}"))
+                if indicator is None:
+                    continue
+                checked += 1
+                positions = _as_list(record.get(f"ptm_{ptm_type}_positions"))
+                residues = _as_list(record.get(f"ptm_{ptm_type}_residues"))
+                if indicator not in (0, 1) or len(positions) != len(residues) \
+                        or bool(indicator) != bool(positions):
+                    failures += 1
+        _add_check(
+            checks, "PTM indicators and site lists agree", failures, checked,
+            "binary flag matches nonempty, equal-length position/residue lists",
+        )
+        failures = 0
+        checked = 0
+        for record in frame.to_dict("records"):
+            meta = catalog_by_key.get(str(record["protein_key"]), {})
+            sequence = str(meta.get("sequence") or "")
+            if not sequence:
+                continue
+            for ptm_type in ptm_types:
+                positions = _as_list(record.get(f"ptm_{ptm_type}_positions"))
+                residues = _as_list(record.get(f"ptm_{ptm_type}_residues"))
+                for position, residue in zip(positions, residues):
+                    checked += 1
+                    number = _number(position)
+                    if number is None or int(number) != number \
+                            or not 0 <= int(number) < len(sequence) \
+                            or sequence[int(number)] != str(residue):
+                        failures += 1
+        _add_check(
+            checks, "PTM coordinates match canonical residues", failures, checked,
+            "every zero-based position is in bounds and stores the matching residue",
+        )
+        ptm_columns = [
+            column for column in frame
+            if column.startswith("ptm_") and column != "ptm_annotation_scope"
+        ]
+        failures, checked = _canonical_leakage(frame, catalog_by_key, ptm_columns)
+        _add_check(
+            checks, "PTM annotations stay canonical-only", failures, checked,
+            "all sequence-distinct isoform PTM fields are null",
+        )
+
+    elif family == "opentargets":
+        expression_failures = 0
+        disease_failures = 0
+        checked = 0
+        for record in frame.to_dict("records"):
+            tissues = _as_list(record.get("opentargets_tissue_expression"))
+            tissue_ids = {
+                (item.get("ensembl_gene_id"), item.get("tissue_id"), item.get("tissue_name"))
+                for item in tissues if isinstance(item, dict)
+            }
+            diseases = _as_list(record.get("opentargets_disease_associations"))
+            disease_ids = {
+                item.get("disease_id") for item in diseases
+                if isinstance(item, dict) and item.get("disease_id")
+            }
+            checked += 1
+            expression_failures += int(
+                int(_number(record.get("opentargets_expression_tissue_count")) or 0)
+                != len(tissue_ids)
+            )
+            disease_failures += int(
+                int(_number(record.get("opentargets_disease_count")) or 0)
+                != len(disease_ids)
+            )
+        _add_check(
+            checks, "Open Targets tissue counts are normalized", expression_failures, checked,
+            "tissue count equals unique ENSG/tissue records",
+        )
+        _add_check(
+            checks, "Open Targets disease counts are normalized", disease_failures, checked,
+            "disease count equals unique disease identifiers",
+        )
+        releases = {
+            str(value) for value in frame.get("opentargets_release", [])
+            if _nonnull(value) and str(value).strip()
+        }
+        _add_check(
+            checks, "Open Targets release is pinned", max(0, len(releases) - 1),
+            len(frame), "exactly one nonempty release value is used",
+        )
+        eligible = sum(
+            bool(_as_list(record.get("ensembl_gene_ids")))
+            for record in catalog.to_dict("records")
+        )
+        positive = sum(
+            (_number(record.get("opentargets_expression_tissue_count")) or 0) > 0
+            or (_number(record.get("opentargets_disease_count")) or 0) > 0
+            for record in frame.to_dict("records")
+        )
+        catastrophic_zero = int(eligible >= 100 and positive == 0)
+        _add_check(
+            checks, "Open Targets has biological coverage", catastrophic_zero,
+            eligible, "a catalog with at least 100 ENSG-mapped rows must not yield zero annotated rows",
+        )
+
+    elif family == "cdcode":
+        columns = [
+            "Condensate Name", "UID", "Condensate Type", "Species Tax Id",
+            "Proteins", "DNA", "RNA", "C-mods", "Condensatopathy",
+            "Confidence Score",
+        ]
+        failures, checked = _parallel_list_failures(frame, columns)
+        _add_check(
+            checks, "CD-CODE fields are positionally parallel", failures, checked,
+            "all ten populated condensate lists have equal length",
+        )
+        uid_failures = 0
+        checked = 0
+        if "UID" in frame:
+            for value in frame["UID"]:
+                uids = _as_list(value)
+                if not uids:
+                    continue
+                checked += 1
+                uid_failures += int(len(uids) != len({str(uid) for uid in uids}))
+        _add_check(
+            checks, "CD-CODE UIDs are unique within rows", uid_failures, checked,
+            "no condensate UID is duplicated for one protein",
+        )
+        failures, checked = _canonical_leakage(frame, catalog_by_key, columns)
+        _add_check(
+            checks, "CD-CODE membership stays canonical-only", failures, checked,
+            "all sequence-distinct isoform CD-CODE fields are null",
+        )
+
+    elif family == "string":
+        failures = 0
+        checked = 0
+        column = "string_partners_ensp_by_query"
+        if column in frame:
+            for cell in frame[column]:
+                for partners in _as_dict(cell).values():
+                    if not isinstance(partners, dict):
+                        failures += 1
+                        checked += 1
+                        continue
+                    for score in partners.values():
+                        checked += 1
+                        number = _number(score)
+                        failures += int(number is None or not 0 <= number <= 1000)
+        _add_check(
+            checks, "STRING confidence scores are bounded", failures, checked,
+            "every retained score is numeric and lies in [0,1000]",
+        )
+
+    elif family == "go_roles":
+        columns = [
+            "role_in_transcription", "role_in_translation",
+            "role_in_mrna_stability", "role_in_translation_stability",
+        ]
+        failures = 0
+        checked = 0
+        for record in frame.to_dict("records"):
+            values = [_number(record.get(column)) for column in columns]
+            if all(value is None for value in values):
+                continue
+            checked += 1
+            if any(value not in (0, 1) for value in values) or values[3] != max(values[1], values[2]):
+                failures += 1
+        _add_check(
+            checks, "GO-role flags are internally consistent", failures, checked,
+            "all flags are binary and the combined flag is translation OR mRNA stability",
+        )
+        failures, checked = _canonical_leakage(frame, catalog_by_key, columns)
+        _add_check(
+            checks, "GO-role labels stay canonical-only", failures, checked,
+            "all sequence-distinct isoform role fields are null",
+        )
+
+    elif family == "pslab":
+        columns = [
+            column for column in frame
+            if column not in {"protein_key", "pslab_annotation_scope"}
+        ]
+        failures, checked = _parallel_list_failures(frame, columns)
+        _add_check(
+            checks, "PSLab per-IDR outputs are parallel", failures, checked,
+            "all populated PSLab lists have equal length within a row",
+        )
+        failures = 0
+        checked = 0
+        for column in (
+            "Saturation concentration [mg/mL]",
+            "Saturation concentration [uM]",
+        ):
+            if column not in frame:
+                continue
+            for cell in frame[column]:
+                for value in _as_list(cell):
+                    number = _number(value)
+                    if number is None:
+                        continue
+                    checked += 1
+                    failures += int(number < 0)
+        _add_check(
+            checks, "PSLab concentrations are nonnegative", failures, checked,
+            "all finite predicted saturation concentrations are at least zero",
+        )
+
+    elif family == "rcsb":
+        failures = 0
+        checked = 0
+        for record in frame.to_dict("records"):
+            count = _number(record.get("RCSB_PDB_count"))
+            if count is None:
+                continue
+            checked += 1
+            failures += int(count < 0 or int(count) != len(_as_list(record.get("RCSB_PDB_IDs"))))
+        _add_check(
+            checks, "RCSB entry counts match PDB ID lists", failures, checked,
+            "RCSB_PDB_count is nonnegative and equals the number of unique PDB IDs",
+        )
+        failures = 0
+        checked = 0
+        count_columns = [column for column in frame if column.startswith("RCSB_") and column.endswith("_count")]
+        for column in count_columns:
+            for value in frame[column]:
+                number = _number(value)
+                if number is None:
+                    continue
+                checked += 1
+                failures += int(number < 0 or int(number) != number)
+        _add_check(
+            checks, "RCSB counts are nonnegative integers", failures, checked,
+            "all populated *_count values are whole numbers at least zero",
+        )
+        columns = [column for column in frame if column.startswith("RCSB_")]
+        failures, checked = _canonical_leakage(frame, catalog_by_key, columns)
+        _add_check(
+            checks, "RCSB mappings stay canonical-only", failures, checked,
+            "all sequence-distinct isoform RCSB fields are null",
+        )
+
+    return checks
+
+
+def _identifier_sanity_checks(catalog):
+    checks = []
+    _add_check(
+        checks, "protein_key is unique", int(catalog["protein_key"].duplicated().sum()),
+        len(catalog), "zero duplicate catalog keys",
+    )
+    length_failures = 0
+    hash_failures = 0
+    canonical_failures = 0
+    np_failures = 0
+    for record in catalog.to_dict("records"):
+        sequence = str(record.get("sequence") or "")
+        length = _number(record.get("length_aa"))
+        length_failures += int(length is None or int(length) != len(sequence))
+        expected_hash = record.get("sequence_sha256")
+        if expected_hash:
+            hash_failures += int(
+                hashlib.sha256(sequence.encode("ascii")).hexdigest() != str(expected_hash)
+            )
+        if record.get("row_kind") == "swissprot_canonical":
+            canonical_failures += int(not record.get("uniprot_id"))
+        np_failures += sum(
+            not str(accession).startswith("NP_")
+            for accession in _as_list(record.get("refseq_protein_ids"))
+        )
+    _add_check(
+        checks, "sequence lengths agree", length_failures, len(catalog),
+        "length_aa equals the amino-acid string length",
+    )
+    _add_check(
+        checks, "sequence hashes agree", hash_failures, len(catalog),
+        "sequence_sha256 equals SHA-256 of the amino-acid sequence",
+    )
+    _add_check(
+        checks, "canonical rows have UniProt accessions", canonical_failures, len(catalog),
+        "every swissprot_canonical row has uniprot_id",
+    )
+    _add_check(
+        checks, "RefSeq protein identifiers are curated NP_ accessions", np_failures, len(catalog),
+        "every populated RefSeq protein accession starts with NP_",
+    )
+    canonical_ids = [
+        str(record.get("uniprot_id"))
+        for record in catalog.to_dict("records")
+        if record.get("row_kind") == "swissprot_canonical" and record.get("uniprot_id")
+    ]
+    _add_check(
+        checks, "canonical UniProt accessions are unique",
+        len(canonical_ids) - len(set(canonical_ids)), len(canonical_ids),
+        "exactly one canonical catalog row per reviewed UniProt accession",
+    )
+    return checks
 
 
 def _is_present(value):
@@ -199,6 +854,7 @@ def write_family_report(family, catalog, sidecar, report_dir):
     coverage = _coverage(frame)
     metric_columns = _metric_columns(family, frame)
     metric = _row_metric(family, frame, metric_columns)
+    sanity_checks = _family_sanity_checks(family, catalog, frame)
     coverage_path, distribution_path = _plot_reports(
         family, coverage, metric, report_dir
     )
@@ -216,6 +872,10 @@ def write_family_report(family, catalog, sidecar, report_dir):
         "primary_signal_median": statistics.median(numeric) if numeric else None,
         "primary_signal_mean": statistics.fmean(numeric) if numeric else None,
         "primary_signal_max": max(numeric) if numeric else None,
+        "sanity_checks_run": len(sanity_checks),
+        "sanity_checks_failed": sum(
+            check["status"] == "FAIL" for check in sanity_checks
+        ),
     }
     os.makedirs(report_dir, exist_ok=True)
     report_path = os.path.join(report_dir, f"{family}.md")
@@ -239,6 +899,18 @@ def write_family_report(family, catalog, sidecar, report_dir):
     lines.extend([
         "",
         "A valid sidecar should have zero duplicate keys, zero missing catalog keys, and zero keys outside the catalog.",
+        "",
+        "## Validation checks",
+        "",
+        "| Status | Check | Failed rows/items | Checked rows/items | Expectation |",
+        "|---|---|---:|---:|---|",
+    ])
+    for check in sanity_checks:
+        lines.append(
+            f"| {check['status']} | {check['check']} | {check['failed_rows']:,} | "
+            f"{check['checked_rows']:,} | {check['expectation']} |"
+        )
+    lines.extend([
         "",
         "## Visual checks",
         "",
@@ -323,6 +995,11 @@ def write_identifier_report(catalog, report_dir):
         "swissprot_canonical_rows": canonical,
         "sequence_unique_np_isoform_rows": isoforms,
     }
+    sanity_checks = _identifier_sanity_checks(catalog)
+    summary["sanity_checks_run"] = len(sanity_checks)
+    summary["sanity_checks_failed"] = sum(
+        check["status"] == "FAIL" for check in sanity_checks
+    )
     lines = [
         "# Identifier and catalog report", "",
         "## Sanity-check summary", "",
@@ -330,6 +1007,16 @@ def write_identifier_report(catalog, report_dir):
     ]
     for key, value in summary.items():
         lines.append(f"| {key.replace('_', ' ')} | {value:,} |")
+    lines.extend([
+        "", "## Validation checks", "",
+        "| Status | Check | Failed rows/items | Checked rows/items | Expectation |",
+        "|---|---|---:|---:|---|",
+    ])
+    for check in sanity_checks:
+        lines.append(
+            f"| {check['status']} | {check['check']} | {check['failed_rows']:,} | "
+            f"{check['checked_rows']:,} | {check['expectation']} |"
+        )
     lines.extend([
         "", "## Identifier coverage", "",
         "| Identifier column | Populated rows | Coverage |", "|---|---:|---:|",

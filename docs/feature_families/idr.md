@@ -4,6 +4,8 @@
 threshold and stores disordered/folded region counts, coordinates, sequences,
 and total/average lengths.
 
+Column definitions: [metapredict IDRs and folded regions](../COLUMN_REFERENCE.md#metapredict-idrs-and-folded-regions).
+
 The annotation is sequence-specific, so canonical and NCBI isoform rows are
 predicted independently. No identifier inheritance is used.
 
@@ -15,3 +17,5 @@ The generated report plots IDR column coverage and the per-row IDR-count
 distribution. In the meeting-era expanded table, 18,053 of 20,483 unique
 UniProt proteins had at least one IDR in any represented row; that historical
 number is context, not a fixed expectation for a current rebuild.
+
+Run `python qc/check_idr.py --work-dir WORK_DIR`.

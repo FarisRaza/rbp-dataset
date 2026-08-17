@@ -39,6 +39,7 @@ On Linux and macOS the wheel installs normally and neither workaround is used.
 
 import argparse
 import io
+import importlib.metadata
 import json
 import os
 import re
@@ -66,7 +67,7 @@ BASE_REQUIREMENTS = [
     "pyarrow", "duckdb",
 ]
 PSLAB_REQUIREMENTS = [SKLEARN_PIN, "MDAnalysis", "numba", "joblib",
-                      "biopython", "pandas", "numpy", "pyarrow"]
+                      "biopython", "pandas", "numpy"]
 
 # Windows forbids these in filenames; the metapredict sdist contains some.
 ILLEGAL_IN_FILENAME = re.compile(r'[|<>:"?*]')
@@ -108,6 +109,52 @@ def installed(python, module):
         ).returncode == 0
     except subprocess.TimeoutExpired:
         return False
+
+
+def base_package_version(package):
+    """Return the base interpreter's installed distribution version."""
+    try:
+        return importlib.metadata.version(package)
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def interpreter_package_version(python, module):
+    command = [
+        python, "-c",
+        f"import {module}; print({module}.__version__)",
+    ]
+    try:
+        result = subprocess.run(
+            command, capture_output=True, text=True, timeout=180
+        )
+    except subprocess.TimeoutExpired:
+        return None
+    return result.stdout.strip().splitlines()[-1] if result.returncode == 0 else None
+
+
+def align_pyarrow(python):
+    """Use one PyArrow version in every process that exchanges Parquet.
+
+    Feature subprocesses run in isolated scientific-model environments, while
+    the catalog and assembly run in the base interpreter. Parquet is a stable
+    format, but some PyArrow release pairs have had reader/writer regressions.
+    Matching the base version avoids producing a sidecar the assembler cannot
+    decode.
+    """
+    base_version = base_package_version("pyarrow")
+    installed_version = interpreter_package_version(python, "pyarrow")
+    if base_version and installed_version != base_version:
+        run([
+            python, "-m", "pip", "install", "-q",
+            f"pyarrow=={base_version}",
+        ])
+        installed_version = interpreter_package_version(python, "pyarrow")
+    elif not installed_version:
+        requirement = f"pyarrow=={base_version}" if base_version else "pyarrow"
+        run([python, "-m", "pip", "install", "-q", requirement])
+        installed_version = interpreter_package_version(python, "pyarrow")
+    return installed_version
 
 
 def fetch_metapredict_source(destination):
@@ -183,8 +230,8 @@ def setup_metapredict(force):
             disable_cython_extension(source)
             run([python, "-m", "pip", "install", "-q", source])
 
-    run([python, "-m", "pip", "install", "-q", "localcider", "numpy", "pandas",
-         "pyarrow"])
+    run([python, "-m", "pip", "install", "-q", "localcider", "numpy", "pandas"])
+    align_pyarrow(python)
     return python
 
 
@@ -195,10 +242,8 @@ def setup_pslab(force):
         print("  requirements already installed")
     else:
         run([python, "-m", "pip", "install", "-q"] + PSLAB_REQUIREMENTS)
-    # Feature sidecars are Parquet even when the scientific model environment
-    # already existed before the clean rebuild pipeline added this dependency.
-    if not installed(python, "pyarrow"):
-        run([python, "-m", "pip", "install", "-q", "pyarrow"])
+    # Match the base interpreter exactly because it assembles these sidecars.
+    align_pyarrow(python)
     return python
 
 
@@ -266,6 +311,21 @@ def verify(metapredict_python, pslab_python):
     else:
         print("  [ ] PSLab environment is not usable")
         ok = False
+
+    base_arrow = base_package_version("pyarrow")
+    model_arrows = {
+        "metapredict": interpreter_package_version(metapredict_python, "pyarrow"),
+        "PSLab": interpreter_package_version(pslab_python, "pyarrow"),
+    }
+    for label, version in model_arrows.items():
+        if base_arrow and version == base_arrow:
+            print(f"  [x] {label} PyArrow matches base ({base_arrow})")
+        else:
+            print(
+                f"  [ ] {label} PyArrow {version!r} does not match "
+                f"base {base_arrow!r}"
+            )
+            ok = False
 
     return ok
 

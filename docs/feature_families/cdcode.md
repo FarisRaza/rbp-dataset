@@ -4,6 +4,8 @@
 UniProt accessions. Ten parallel lists describe condensate name, UID, type,
 species, molecular contents, condensatopathy, and confidence.
 
+Column definitions: [CD-CODE condensates](../COLUMN_REFERENCE.md#cd-code-condensates).
+
 Sequence-distinct NCBI isoforms remain null because membership is keyed to the
 canonical UniProt protein and is not isoform-specific.
 
@@ -14,3 +16,5 @@ cover the catalog.
 The generated report plots field coverage and condensate memberships per row.
 Exact source reproduction requires the validated external snapshot described in
 `DATA_SOURCES.md`.
+
+Run `python qc/check_cdcode.py --work-dir WORK_DIR`.
