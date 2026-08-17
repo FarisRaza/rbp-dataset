@@ -3,10 +3,10 @@
 Typical use::
 
     python setup_environment.py
-    python rebuild_from_scratch.py all --work-dir D:/human_isoform_rebuild
+    python build_dataset.py all --work-dir D:/human_isoform_rebuild
 
-Stages are resumable.  ``download`` obtains current reviewed human Swiss-Prot,
-the NCBI human gene package and (by default) the current Ensembl peptide FASTA.
+Stages are resumable. ``download`` obtains current reviewed human Swiss-Prot,
+the NCBI human RefSeq NP_ release and the current Ensembl peptide FASTA.
 ``catalog`` creates stable canonical and sequence-deduplicated isoform rows.
 ``features`` invokes one independent ``annotate_<family>.py`` program per
 selected family.  ``assemble`` performs keyed left joins into the final table.
@@ -23,11 +23,16 @@ import sys
 import assemble_features
 import catalog_selection
 import ensembl_ids
+import finalize_table
 import isoform_catalog
 import ncbi_isoforms
+import ncbi_refseq_ftp
+import np_refseq_catalog
 import opentargets
 import paths
+import rcsb
 import swissprot_source
+from catalog_io import read_rows
 from catalog_io import write_rows
 from rebuild_schema import BASE_COLUMNS
 
@@ -49,8 +54,9 @@ DEFAULT_FEATURES = [
     "go_roles",
     "cider",
     "pslab",
+    "rcsb",
 ]
-OPTIONAL_FEATURES = ["rcsb"]
+OPTIONAL_FEATURES = []
 ALL_FEATURES = DEFAULT_FEATURES + OPTIONAL_FEATURES
 FEATURE_DEPENDENCIES = {
     "cider": ["idr", "domains"],
@@ -71,6 +77,7 @@ def layout(work_dir, opentargets_release=opentargets.DEFAULT_RELEASE):
         "swissprot": os.path.join(sources, "human_reviewed_swissprot.dat"),
         "ncbi_zip": os.path.join(sources, "ncbi_human_gene.zip"),
         "ncbi_dir": os.path.join(sources, "ncbi_human_gene"),
+        "ncbi_refseq_ftp": os.path.join(sources, "ncbi_refseq_ftp"),
         "ensembl": os.path.join(sources, "Homo_sapiens.GRCh38.pep.all.fa.gz"),
         "opentargets_root": opentargets_root,
         "opentargets_associations": os.path.join(
@@ -83,9 +90,15 @@ def layout(work_dir, opentargets_release=opentargets.DEFAULT_RELEASE):
             opentargets_root, "disease.parquet"
         ),
         "opentargets_release": opentargets_release,
+        "rcsb_sifts": os.path.join(sources, "pdb_chain_uniprot.tsv.gz"),
+        "rcsb_summary": os.path.join(sources, "human_swissprot_rcsb_summary.csv"),
         "catalog": os.path.join(root, "catalog", "human_protein_isoforms.parquet"),
         "catalog_audit": os.path.join(root, "catalog", "catalog.audit.json"),
+        "catalog_reports": os.path.join(root, "catalog", "reports"),
         "features": os.path.join(root, "features"),
+        "assembled_clean": os.path.join(
+            root, "human_proteome_isoforms_features_clean.parquet"
+        ),
         "final": os.path.join(root, "human_proteome_isoforms_features.parquet"),
         "run_manifest": os.path.join(root, "run_manifest.json"),
     }
@@ -127,20 +140,26 @@ def download_stage(config, args, selected=None):
     swissprot_source.download_human_reviewed(
         config["swissprot"], force=args.force
     )
-    datasets_exe = args.datasets_exe
-    if not datasets_exe:
-        project_copy = os.path.join(paths.KAPPEL, "datasets.exe")
-        datasets_exe = project_copy if os.path.exists(project_copy) else None
-    ncbi_isoforms.download_human_gene_package(
-        config["ncbi_zip"],
-        datasets_exe=datasets_exe,
-        include_predicted=args.include_predicted,
-        include_orphan_refseq=args.include_orphan_refseq,
-        force=args.force,
-    )
-    ncbi_paths = ncbi_isoforms.extract_gene_package(
-        config["ncbi_zip"], config["ncbi_dir"], force=args.force
-    )
+    if args.ncbi_source == "refseq-ftp":
+        ncbi_paths = ncbi_refseq_ftp.download_human_np_release(
+            config["ncbi_refseq_ftp"],
+            force=args.force,
+            datasets_exe=args.datasets_exe,
+        )
+    else:
+        datasets_exe = args.datasets_exe
+        if not datasets_exe:
+            project_copy = os.path.join(paths.KAPPEL, "datasets.exe")
+            datasets_exe = project_copy if os.path.exists(project_copy) else None
+        ncbi_isoforms.download_human_gene_package(
+            config["ncbi_zip"],
+            datasets_exe=datasets_exe,
+            include_predicted=args.include_predicted,
+            force=args.force,
+        )
+        ncbi_paths = ncbi_isoforms.extract_gene_package(
+            config["ncbi_zip"], config["ncbi_dir"], force=args.force
+        )
     if not args.no_ensembl_fallback:
         ensembl_ids.download_current_peptides(config["ensembl"], force=args.force)
     if selected is None or "opentargets" in selected:
@@ -175,7 +194,10 @@ def catalog_stage(config, args):
             )
         print(f"catalog exists, keeping: {config['catalog']}")
         return config["catalog"]
-    ncbi_paths = _ncbi_paths(config)
+    ncbi_paths = (
+        ncbi_refseq_ftp.existing_release_paths(config["ncbi_refseq_ftp"])
+        if args.ncbi_source == "refseq-ftp" else _ncbi_paths(config)
+    )
     ensembl_index = None
     ensembl_release = None
     if not args.no_ensembl_fallback and os.path.exists(config["ensembl"]):
@@ -187,15 +209,35 @@ def catalog_stage(config, args):
                 manifest = json.load(handle)
             ensembl_release = manifest.get("resolved_url") or manifest.get("url")
     print("building canonical + sequence-unique NCBI isoform catalog")
-    rows, audit = isoform_catalog.build_catalog(
-        config["swissprot"],
-        ncbi_paths["gene_report"],
-        ncbi_paths["product_report"],
-        ncbi_paths["protein_fasta"],
-        include_predicted=args.include_predicted,
-        ensembl_index=ensembl_index,
-        ensembl_release=ensembl_release,
-    )
+    if args.ncbi_source == "refseq-ftp":
+        if args.include_predicted:
+            raise ValueError(
+                "--include-predicted requires --ncbi-source datasets; "
+                "the refseq-ftp workflow is deliberately NP_-only"
+            )
+        rows, audit, reports = np_refseq_catalog.build_catalog(
+            config["swissprot"],
+            ncbi_paths["protein_dir"],
+            ncbi_paths["gff_paths"],
+            accession_product_report=ncbi_paths.get("accession_product_report"),
+            ensembl_index=ensembl_index,
+            ensembl_release=ensembl_release,
+        )
+        report_paths = np_refseq_catalog.write_reports(
+            config["catalog_reports"], reports
+        )
+        audit["report_paths"] = report_paths
+    else:
+        rows, audit = isoform_catalog.build_catalog(
+            config["swissprot"],
+            ncbi_paths["gene_report"],
+            ncbi_paths["product_report"],
+            ncbi_paths["protein_fasta"],
+            include_predicted=args.include_predicted,
+            include_orphan_refseq=args.include_orphan_refseq,
+            ensembl_index=ensembl_index,
+            ensembl_release=ensembl_release,
+        )
     selection_spec = catalog_selection.selection_spec(
         args.proteins, args.protein_list, args.protein_fasta
     )
@@ -240,8 +282,12 @@ def _feature_sources(config, args):
         "cdcode_root": args.cdcode_root or source_dir,
         "string_links": choose(args.string_links, "9606.protein.links.v12.0.txt"),
         "pspred_repo": args.pspred_repo or paths.PSPRED_REPO,
-        "rcsb_summary": choose(
-            args.rcsb_summary, "Human_Proteome_RCSB_PDB_Summary.csv"
+        "rcsb_summary": (
+            args.rcsb_summary
+            or prefer(
+                config["rcsb_summary"],
+                choose(None, "Human_Proteome_RCSB_PDB_Summary.csv"),
+            )
         ),
     }
 
@@ -327,6 +373,20 @@ def features_stage(config, args, selected):
         added = [family for family in planned if family not in selected]
         print(f"computing dependency sidecars (not assembled): {', '.join(added)}")
     for family in planned:
+        if family == "rcsb" and not os.path.exists(sources["rcsb_summary"]):
+            print("rcsb: building current all-entry SIFTS mapping summary")
+            rcsb.download_sifts(config["rcsb_sifts"], force=args.force)
+            accessions = [
+                row["uniprot_id"]
+                for row in read_rows(config["catalog"])
+                if row.get("row_kind") == "swissprot_canonical"
+                and row.get("uniprot_id")
+            ]
+            metadata = rcsb.write_sifts_mapping_summary(
+                config["rcsb_sifts"], accessions, config["rcsb_summary"]
+            )
+            print(json.dumps(metadata, indent=2))
+            sources["rcsb_summary"] = config["rcsb_summary"]
         missing = [
             name for name in SOURCE_REQUIREMENTS.get(family, [])
             if not os.path.exists(sources[name])
@@ -356,9 +416,14 @@ def assemble_stage(config, args, selected):
     ]
     if not sidecars:
         raise FileNotFoundError("no feature sidecars are available to assemble")
-    manifest = assemble_features.assemble(
-        config["catalog"], sidecars, args.output or config["final"]
+    clean_manifest = assemble_features.assemble(
+        config["catalog"], sidecars, config["assembled_clean"]
     )
+    output = args.output or config["final"]
+    final_manifest = finalize_table.finalize(
+        config["assembled_clean"], output, columns=args.columns
+    )
+    manifest = {"clean_assembly": clean_manifest, "finalization": final_manifest}
     print(json.dumps(manifest, indent=2))
     return manifest
 
@@ -372,11 +437,13 @@ def write_run_manifest(config, args, selected):
         "features_requested": selected,
         "include_predicted_refseq": args.include_predicted,
         "include_orphan_refseq": args.include_orphan_refseq,
+        "ncbi_source": args.ncbi_source,
         "ensembl_exact_sequence_fallback": not args.no_ensembl_fallback,
         "opentargets_release": args.opentargets_release,
         "selection_spec": catalog_selection.selection_spec(
             args.proteins, args.protein_list, args.protein_fasta
         ),
+        "final_columns": args.columns,
         "feature_sidecars": {
             family: os.path.join(config["features"], family + ".parquet")
             for family in selected
@@ -398,9 +465,16 @@ def parser():
     p.add_argument("--work-dir", default=default_work)
     p.add_argument(
         "--features", default="default",
-        help="default, all, or comma-separated families; add rcsb with --features all",
+        help="default/all, or a comma-separated list of feature families",
     )
     p.add_argument("--output", help="final .parquet or .csv path")
+    p.add_argument(
+        "--columns",
+        help=(
+            "comma-separated exact final columns; protein_key is always kept. "
+            "Use --features to choose whole feature-family column blocks"
+        ),
+    )
     p.add_argument(
         "--proteins",
         help="comma/space-separated identifiers; UniProt parents retain mapped isoforms",
@@ -414,6 +488,14 @@ def parser():
         help="fail if any requested identifier or FASTA sequence is unmatched",
     )
     p.add_argument("--datasets-exe", help="path to NCBI datasets executable")
+    p.add_argument(
+        "--ncbi-source", choices=["refseq-ftp", "datasets"],
+        default="refseq-ftp",
+        help=(
+            "NCBI identity source; refseq-ftp is the resilient NP_-only default, "
+            "while datasets supports optional XP_ products"
+        ),
+    )
     p.add_argument(
         "--source-dir",
         help="directory holding user-supplied feature sources (see DATA_SOURCES.md)",

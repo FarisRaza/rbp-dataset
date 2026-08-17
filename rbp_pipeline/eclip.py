@@ -75,11 +75,15 @@ def load(path=None, kappel_dir=None):
     with open(path, newline="", encoding="utf-8", errors="replace") as fh:
         reader = csv.DictReader(fh)
         columns = [c for c in reader.fieldnames if _is_eclip_column(c)]
+        columns.append("rbp_census_unique")
         by_gene = {}
         for row in reader:
             symbol = row.get(JOIN_COLUMN)
             if symbol:
-                by_gene[symbol] = {c: row.get(c, "") for c in columns}
+                by_gene[symbol] = {
+                    **{c: row.get(c, "") for c in columns if c != "rbp_census_unique"},
+                    "rbp_census_unique": row.get("UNIQUE", ""),
+                }
     return by_gene, columns
 
 

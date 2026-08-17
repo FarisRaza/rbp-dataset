@@ -5,9 +5,9 @@ as gzip JSON under ``EXPANSION_SCRATCH/rcsb_secondary_batches``.  Re-running the
 command fetches only absent or corrupt batches, then rewrites the final summary
 and normalized element table atomically.
 
-    python stage_rcsb.py
-    python stage_rcsb.py --workers 6 --batch-size 500
-    python stage_rcsb.py --refresh-sifts
+    python rbp_pipeline/stage_rcsb.py
+    python rbp_pipeline/stage_rcsb.py --workers 6 --batch-size 500
+    python rbp_pipeline/stage_rcsb.py --refresh-sifts
 """
 
 import argparse
@@ -85,4 +85,3 @@ def main(argv=None):
 
 if __name__ == "__main__":
     main()
-

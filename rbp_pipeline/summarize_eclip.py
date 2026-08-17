@@ -229,6 +229,61 @@ def summarize(input_path, out_dir):
     }
     with open(os.path.join(out_dir, "eclip_summary.json"), "w", encoding="utf-8") as handle:
         json.dump(summary, handle, indent=2, allow_nan=False)
+    markdown_path = os.path.join(out_dir, "eclip_summary.md")
+    with open(markdown_path, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write("# ENCODE and ENCORI eCLIP summary\n\n")
+        handle.write(
+            f"The compilation contains **{len(frame):,} RBP genes**; "
+            f"**{summary['genes_with_any_clip_source']:,}** have at least one "
+            "CLIP source. Values in the master table are gene-level and are "
+            "broadcast to mapped protein isoforms.\n\n"
+        )
+        handle.write("## Source coverage\n\n")
+        handle.write("| Source | Genes measured | RBP-table coverage | Median raw count |\n")
+        handle.write("|---|---:|---:|---:|\n")
+        for record in summary["coverage"]:
+            handle.write(
+                f"| {record['source']} | {record['genes_measured']:,} | "
+                f"{record['fraction_of_rbp_table']:.1%} | "
+                f"{record['median_raw_regions_or_windows']:,.1f} |\n"
+            )
+        handle.write("\n![CLIP source coverage](eclip_source_coverage.png)\n\n")
+        handle.write("## ENCODE versus ENCORI (published criteria)\n\n")
+        published = summary["published_encode_encori"]
+        shared_genes = max((record["shared_genes"] for record in published), default=0)
+        concordance = next(
+            (
+                record["dominant_region_concordance"]
+                for record in published
+                if record["dominant_region_concordance"] is not None
+            ),
+            None,
+        )
+        concordance_text = (
+            f"{concordance:.1%}" if concordance is not None else "not estimable"
+        )
+        handle.write(
+            f"The {shared_genes:,} genes shared by the published-criteria sets "
+            f"have {concordance_text} "
+            "dominant-region agreement. Correlations are based on regional "
+            "fractions, not raw peak/site counts.\n\n"
+        )
+        handle.write("| Region | Shared genes | Pearson r | Mean absolute difference |\n")
+        handle.write("|---|---:|---:|---:|\n")
+        for record in published:
+            handle.write(
+                f"| {record['region']} | {record['shared_genes']:,} | "
+                f"{record['pearson_r']:.3f} | "
+                f"{record['mean_absolute_gene_difference']:.3f} |\n"
+            )
+        handle.write("\n![ENCODE versus ENCORI](encode_vs_encori_published.png)\n\n")
+        handle.write("## Regional composition\n\n")
+        handle.write("![Binding-region composition](eclip_region_composition.png)\n\n")
+        handle.write(
+            "Raw counts primarily reflect source depth and dataset multiplicity; "
+            "use region fractions and enrichment columns for biological comparisons.\n"
+        )
+    summary["markdown_report"] = os.path.abspath(markdown_path)
     return summary
 
 
@@ -243,4 +298,3 @@ def main(argv=None):
 
 if __name__ == "__main__":
     main()
-

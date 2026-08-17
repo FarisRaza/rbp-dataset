@@ -1,16 +1,26 @@
 """Fast offline tests for the clean catalog, PTM projection and assembly."""
 
 import csv
+import gzip
 import json
 import os
+import sys
 import tempfile
 import unittest
+
+PIPELINE_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "rbp_pipeline"
+)
+if PIPELINE_DIR not in sys.path:
+    sys.path.insert(0, PIPELINE_DIR)
 
 import assemble_features
 import catalog_selection
 import export_catalog_fasta
+import finalize_table
 import generate_feature_reports
 import isoform_catalog
+import np_refseq_catalog
 import opentargets
 import ptm
 import rebuild_from_scratch
@@ -54,6 +64,63 @@ SQ   SEQUENCE   5 AA;  500 MW;  0000000000000000 CRC64;
 
 
 class CatalogTests(unittest.TestCase):
+    def test_np_ftp_catalog_maps_geneids_and_reports_orphans(self):
+        with tempfile.TemporaryDirectory() as root:
+            swiss = os.path.join(root, "human.dat")
+            protein_dir = os.path.join(root, "protein")
+            gff = os.path.join(root, "human.gff.gz")
+            os.makedirs(protein_dir)
+            with open(swiss, "w", encoding="utf-8") as handle:
+                handle.write(SWISSPROT_FIXTURE)
+            fasta = os.path.join(protein_dir, "human.1.protein.faa.gz")
+            with gzip.open(fasta, "wt", encoding="ascii") as handle:
+                handle.write(
+                    ">NP_000001.1 canonical product [Homo sapiens]\nMAAAA\n"
+                    ">NP_000002.1 alternative product [Homo sapiens]\nMAAAT\n"
+                    ">NP_000003.1 orphan product [Homo sapiens]\nMGGGG\n"
+                )
+            with gzip.open(gff, "wt", encoding="utf-8") as handle:
+                handle.write("#!annotation-source fixture-release\n")
+                handle.write(
+                    "NC_1\tRefSeq\tCDS\t1\t15\t.\t+\t0\t"
+                    "ID=cds-NP_000001.1;Parent=rna-NM_000001.1;"
+                    "Dbxref=GeneID:1;gene=TEST1;product=canonical product;"
+                    "protein_id=NP_000001.1\n"
+                )
+                handle.write(
+                    "NC_1\tRefSeq\tCDS\t20\t34\t.\t+\t0\t"
+                    "ID=cds-NP_000002.1;Parent=rna-NM_000002.1;"
+                    "Dbxref=GeneID:1;gene=TEST1;product=alternative product;"
+                    "protein_id=NP_000002.1\n"
+                )
+                handle.write(
+                    "NC_1\tRefSeq\tCDS\t40\t54\t.\t+\t0\t"
+                    "ID=cds-NP_000003.1;Parent=rna-NM_000003.1;"
+                    "Dbxref=GeneID:3;gene=ORPHAN;product=orphan product;"
+                    "protein_id=NP_000003.1\n"
+                )
+
+            rows, audit, reports = np_refseq_catalog.build_catalog(
+                swiss, protein_dir, [gff]
+            )
+            self.assertEqual(audit["current_ncbi_np_accessions"], 3)
+            self.assertEqual(audit["np_accessions_mapped_to_reviewed_uniprot"], 2)
+            self.assertEqual(audit["np_accessions_without_reviewed_uniprot"], 1)
+            self.assertEqual(
+                audit["reviewed_uniprot_accessions_without_mapped_np_canonical_fallback"],
+                1,
+            )
+            self.assertEqual(audit["catalog_rows"], 3)
+            self.assertEqual(
+                reports["np_without_reviewed_uniprot"][0]["refseq_protein"],
+                "NP_000003.1",
+            )
+            fallback = reports["uniprot_without_mapped_np"]
+            self.assertEqual([row["uniprot_id"] for row in fallback], ["P00002"])
+            isoform = next(row for row in rows if row["row_kind"] == "ncbi_isoform")
+            self.assertEqual(isoform["uniprot_id"], "P00001")
+            self.assertEqual(isoform["refseq_protein_ids"], ["NP_000002.1"])
+
     def test_canonical_guarantee_and_sequence_deduplication(self):
         with tempfile.TemporaryDirectory() as root:
             swiss = os.path.join(root, "human.dat")
@@ -246,6 +313,52 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(manifest["output_rows"], 2)
             final = read_rows(output)
             self.assertEqual(len(final), 2)
+
+    def test_finalizer_computes_dominance_and_groups_uniprot(self):
+        with tempfile.TemporaryDirectory() as root:
+            assembled = os.path.join(root, "assembled.parquet")
+            output = os.path.join(root, "final.parquet")
+            base = {
+                column: ([] if column in LIST_COLUMNS else None)
+                for column in BASE_COLUMNS
+            }
+            canonical = dict(base)
+            canonical.update(
+                protein_key="sp:P00001", row_kind="swissprot_canonical",
+                sequence="MAAAA", length_aa=5,
+                sequence_sha256=isoform_catalog.sequence_sha256("MAAAA"),
+                uniprot_id="P00001", uniprot_parent_ids=["P00001"],
+                is_swissprot_canonical=True, gene_symbol="TEST1",
+                ensembl_gene_ids=["ENSG1"], ncbi_gene_id="1",
+            )
+            isoform = dict(base)
+            isoform.update(
+                protein_key="refseq:1:test", row_kind="ncbi_isoform",
+                sequence="MAATA", length_aa=5,
+                sequence_sha256=isoform_catalog.sequence_sha256("MAATA"),
+                uniprot_id="P00001", uniprot_parent_ids=["P00001"],
+                is_swissprot_canonical=False, gene_symbol="TEST1",
+                refseq_protein_ids=["NP_000002.1"],
+                ensembl_gene_ids=["ENSG1"], ncbi_gene_id="1",
+            )
+            write_rows([isoform, canonical], assembled, BASE_COLUMNS)
+            manifest = finalize_table.finalize(assembled, output)
+            rows = read_rows(output)
+            self.assertEqual(manifest["dominant_isoform_rows"], 1)
+            self.assertEqual([row["dominant_isoform"] for row in rows], [1, 0])
+            self.assertEqual([row["uniprot_id"] for row in rows], ["P00001", "P00001"])
+            self.assertEqual(rows[1]["ProteinHGVS"], "NP_000002.1")
+            self.assertEqual(rows[0]["ENSG"], "ENSG1")
+
+            narrow = os.path.join(root, "narrow.parquet")
+            finalize_table.finalize(
+                assembled, narrow, columns="uniprot_id,dominant_isoform,ENSG"
+            )
+            narrow_rows = read_rows(narrow)
+            self.assertEqual(
+                list(narrow_rows[0]),
+                ["protein_key", "uniprot_id", "dominant_isoform", "ENSG"],
+            )
 
 
 class OpenTargetsTests(unittest.TestCase):

@@ -1,11 +1,11 @@
 """Post-translational modification (PTM) feature family.
 
 The project snapshot ``df_ptm.csv`` contains canonical UniProt sites in eleven
-PTM classes.  Coordinates are zero-based residue indexes.  Canonical rows are
-joined directly; NCBI isoform rows receive only sites that can be projected
-through a protein-sequence alignment and whose modified residue is conserved.
-This is deliberately stricter than copying canonical coordinates to every
-isoform.
+PTM classes. Coordinates are zero-based residue indexes. In the clean master
+build, canonical rows are joined directly and sequence-distinct NCBI isoform
+rows remain null because these observations belong to the canonical UniProt
+sequence. Alignment projection remains available as an explicit opt-in utility
+for analyses that want inferred rather than directly sourced isoform sites.
 
 The companion ``ptm.txt`` is a raw tab-separated site export with one-based
 site labels such as ``K117``.  :func:`load_raw_site_table` can parse that form,
@@ -246,24 +246,47 @@ def _merge_annotations(annotations):
     return out
 
 
-def annotate_rows(rows, canonical_annotations):
-    """Yield sidecar rows keyed by ``protein_key`` for a clean catalog."""
+def annotate_rows(rows, canonical_annotations, project_isoforms=True):
+    """Yield sidecar rows keyed by ``protein_key`` for a clean catalog.
+
+    Set ``project_isoforms=False`` when canonical UniProt annotations must not
+    be transferred to sequence-distinct RefSeq products. In that mode every
+    PTM cell on a noncanonical row is null rather than a misleading measured 0.
+    """
     canonical_sequences = {
         row["uniprot_id"]: row["sequence"]
         for row in rows
         if row.get("row_kind") == "swissprot_canonical" and row.get("uniprot_id")
     }
     for row in rows:
+        canonical = row.get("row_kind") == "swissprot_canonical"
+        if not canonical and not project_isoforms:
+            yield {
+                "protein_key": row["protein_key"],
+                **{column: None for column in PTM_COLUMNS + PROVENANCE_COLUMNS},
+                "ptm_annotation_scope": (
+                    "not applicable: source PTM coordinates are canonical-specific"
+                ),
+            }
+            continue
         sources = []
         projected = []
-        if row.get("row_kind") == "swissprot_canonical":
+        if canonical:
             accession = row.get("uniprot_id")
             annotation = canonical_annotations.get(accession)
-            if annotation:
-                direct = _merge_annotations([annotation])
-                direct["ptm_projection_methods"] = ["direct_canonical_UniProt_join"]
-                projected.append(direct)
-                sources.append(accession)
+            if not annotation:
+                yield {
+                    "protein_key": row["protein_key"],
+                    **{column: None for column in PTM_COLUMNS + PROVENANCE_COLUMNS},
+                    "ptm_annotation_scope": (
+                        "canonical UniProt accession absent from supplied PTM snapshot"
+                    ),
+                }
+                continue
+            direct = _merge_annotations([annotation])
+            direct["ptm_projection_methods"] = ["direct_canonical_UniProt_join"]
+            projected.append(direct)
+            sources.append(accession)
         else:
             for accession in row.get("uniprot_parent_ids") or []:
                 annotation = canonical_annotations.get(accession)
@@ -276,7 +299,15 @@ def annotate_rows(rows, canonical_annotations):
                 sources.append(accession)
         result = _merge_annotations(projected) if projected else empty_annotation()
         result["ptm_projection_source_uniprot_ids"] = sorted(set(sources))
-        yield {"protein_key": row["protein_key"], **result}
+        yield {
+            "protein_key": row["protein_key"],
+            **result,
+            "ptm_annotation_scope": (
+                "direct canonical UniProt PTM coordinates"
+                if canonical else
+                "residue-conserving projection from canonical UniProt"
+            ),
+        }
 
 
 def main(argv=None):
@@ -290,7 +321,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
     rows = read_rows(args.input)
     source = load_wide_csv(args.ptm_csv)
-    columns = ["protein_key"] + PTM_COLUMNS + PROVENANCE_COLUMNS
+    columns = ["protein_key"] + PTM_COLUMNS + PROVENANCE_COLUMNS + [
+        "ptm_annotation_scope"
+    ]
     write_feature_rows(annotate_rows(rows, source), args.output, columns)
 
 

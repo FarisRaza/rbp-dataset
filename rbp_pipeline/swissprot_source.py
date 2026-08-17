@@ -143,7 +143,7 @@ def _xref_accession(value):
     """
     if not value:
         return None
-    return str(value).split()[0].rstrip(".")
+    return str(value).split()[0].rstrip(".;")
 
 
 def metadata(record):
@@ -154,7 +154,7 @@ def metadata(record):
         database = xref[0]
         values = list(xref[1:])
         if database == "GeneID" and values:
-            gene_ids.append(values[0])
+            gene_ids.append(_xref_accession(values[0]))
         elif database == "HGNC" and values:
             hgnc_ids.append(values[0])
         elif database == "RefSeq" and values:

@@ -102,7 +102,11 @@ def _metric_columns(family, frame):
             c for c in frame.columns
             if c.startswith("ptm_")
             and not c.endswith(("_positions", "_residues"))
-            and c not in {"ptm_projection_dropped_sites", "ptm_coordinate_system"}
+            and c not in {
+                "ptm_projection_dropped_sites", "ptm_coordinate_system",
+                "ptm_annotation_scope",
+            }
+            and not c.startswith("ptm_projection_")
         ]
     elif family == "eclip" and not available:
         preferred = [
@@ -259,6 +263,90 @@ def write_family_report(family, catalog, sidecar, report_dir):
     return report_path, summary
 
 
+def write_identifier_report(catalog, report_dir):
+    """Write catalog row/identifier coverage as the base-family QC report."""
+    identifier_columns = [
+        "uniprot_parent_ids", "refseq_protein_ids", "refseq_transcript_ids",
+        "ncbi_gene_ids", "ensembl_gene_ids", "ensembl_transcript_ids",
+        "ensembl_protein_ids", "hgnc_ids",
+    ]
+    coverage = []
+    for column in identifier_columns:
+        if column not in catalog:
+            continue
+        populated = int(sum(_is_present(value) for value in catalog[column]))
+        coverage.append((column, populated, 100.0 * populated / max(len(catalog), 1)))
+    row_kinds = catalog["row_kind"].value_counts(dropna=False).to_dict()
+    canonical = int(row_kinds.get("swissprot_canonical", 0))
+    isoforms = int(row_kinds.get("ncbi_isoform", 0))
+
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    figure_dir = os.path.join(report_dir, "figures")
+    os.makedirs(figure_dir, exist_ok=True)
+    coverage_path = os.path.join(figure_dir, "identifiers_coverage.png")
+    fig, axis = plt.subplots(figsize=(8, 4.5))
+    axis.barh(
+        [item[0] for item in coverage][::-1],
+        [item[2] for item in coverage][::-1],
+        color="#315f72",
+    )
+    axis.set_xlim(0, 100)
+    axis.set_xlabel("Rows with at least one identifier (%)")
+    axis.set_title("Catalog identifier coverage")
+    fig.tight_layout()
+    fig.savefig(coverage_path, dpi=160)
+    plt.close(fig)
+
+    row_kind_path = os.path.join(figure_dir, "identifiers_row_kinds.png")
+    fig, axis = plt.subplots(figsize=(6, 4))
+    bars = axis.bar(
+        ["Swiss-Prot canonical", "sequence-unique NP isoform"],
+        [canonical, isoforms],
+        color=["#315f72", "#bd5d38"],
+    )
+    axis.bar_label(bars, fmt="%d")
+    axis.set_ylabel("Rows")
+    axis.set_title("Catalog row composition")
+    axis.tick_params(axis="x", rotation=12)
+    fig.tight_layout()
+    fig.savefig(row_kind_path, dpi=160)
+    plt.close(fig)
+
+    summary = {
+        "catalog_rows": len(catalog),
+        "unique_protein_keys": int(catalog["protein_key"].nunique()),
+        "duplicate_protein_keys": int(catalog["protein_key"].duplicated().sum()),
+        "swissprot_canonical_rows": canonical,
+        "sequence_unique_np_isoform_rows": isoforms,
+    }
+    lines = [
+        "# Identifier and catalog report", "",
+        "## Sanity-check summary", "",
+        "| Check | Value |", "|---|---:|",
+    ]
+    for key, value in summary.items():
+        lines.append(f"| {key.replace('_', ' ')} | {value:,} |")
+    lines.extend([
+        "", "## Identifier coverage", "",
+        "| Identifier column | Populated rows | Coverage |", "|---|---:|---:|",
+    ])
+    for column, populated, percentage in coverage:
+        lines.append(f"| `{column}` | {populated:,} | {percentage:.1f}% |")
+    lines.extend([
+        "", "## Visual checks", "",
+        "![Identifier coverage](figures/identifiers_coverage.png)", "",
+        "![Catalog row composition](figures/identifiers_row_kinds.png)", "",
+    ])
+    report_path = os.path.join(report_dir, "identifiers.md")
+    with open(report_path, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write("\n".join(lines))
+    return report_path, summary
+
+
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--work-dir", required=True)
@@ -281,6 +369,12 @@ def main(argv=None):
     report_dir = os.path.abspath(args.output_dir or os.path.join(args.work_dir, "reports"))
     generated = []
     summaries = {}
+    identifier_report, identifier_summary = write_identifier_report(
+        catalog, report_dir
+    )
+    generated.append(identifier_report)
+    summaries["identifiers"] = identifier_summary
+    print(f"wrote {identifier_report}")
     for family in families:
         sidecar = os.path.join(config["features"], family + ".parquet")
         if not os.path.exists(sidecar):

@@ -22,9 +22,10 @@ import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+REPOSITORY_ROOT = os.path.dirname(HERE)
 
 #: Directory holding the master table and every source file.
-KAPPEL = os.environ.get("KAPPEL_DIR", os.path.dirname(HERE))
+KAPPEL = os.environ.get("KAPPEL_DIR", os.path.dirname(REPOSITORY_ROOT))
 
 #: Where per-family intermediates are written. These run to a few hundred MB and
 #: are fully regenerable, so they default to the system temp directory rather
@@ -36,7 +37,9 @@ SCRATCH = os.environ.get(
 )
 
 #: Clone of https://github.com/KULL-Centre/_2024_buelow_PSpred
-PSPRED_REPO = os.environ.get("PSPRED_REPO", os.path.join(HERE, "vendor", "PSpred"))
+PSPRED_REPO = os.environ.get(
+    "PSPRED_REPO", os.path.join(REPOSITORY_ROOT, "vendor", "PSpred")
+)
 
 #: Per-environment interpreters. metapredict (torch) and PSLab (scikit-learn 1.6)
 #: cannot share one environment.

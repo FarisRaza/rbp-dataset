@@ -45,11 +45,15 @@ def run_cider(rows, idr_features=None, domain_features=None, **_):
         for metric, values in cider.per_idr(idr_sequences or []).items():
             out[f"IDR_{metric}"] = values
 
-        domain_sequences = domains.get(row["protein_key"], {}).get(
-            "Domains_discrete_seq", {}
-        )
-        for metric, values in cider.per_domain(domain_sequences or {}).items():
-            out[f"Domains_{metric}"] = values
+        domain_record = domains.get(row["protein_key"], {})
+        domain_sequences = domain_record.get("Domains_discrete_seq")
+        if domain_sequences is None:
+            # These metrics depend on UniProt's canonical DOMAIN/ZN_FING
+            # coordinates, so they must remain null on sequence-distinct rows.
+            out.update({column: None for column in schema.DOMAIN_CIDER_COLUMNS})
+        else:
+            for metric, values in cider.per_domain(domain_sequences or {}).items():
+                out[f"Domains_{metric}"] = values
         out["cider_sequence_sanitization"] = (
             "U->C; other noncanonical residues removed only while scoring"
         )
@@ -77,7 +81,7 @@ def run_idr(rows, **_):
 
     idr.install_python_fallback()
     predictions = idr.predict(
-        [row["sequence"] for row in rows], batch_size=200, show_progress=True
+        [row["sequence"] for row in rows], batch_size=200, show_progress=False
     )
     for row, prediction in zip(rows, predictions):
         yield {
@@ -120,7 +124,15 @@ def run_domains(rows, swissprot=None, **_):
             scope = "not applicable: UniProt coordinates are canonical-specific"
         yield {
             "protein_key": row["protein_key"],
-            **(copy.deepcopy(value) if value is not None else copy.deepcopy(domains.EMPTY)),
+            **(
+                copy.deepcopy(value)
+                if value is not None
+                else (
+                    copy.deepcopy(domains.EMPTY)
+                    if row.get("row_kind") == "swissprot_canonical"
+                    else {column: None for column in schema.DOMAIN_GEOMETRY_COLUMNS}
+                )
+            ),
             "uniprot_domain_annotation_scope": scope,
         }
     _ = schema.DOMAIN_GEOMETRY_COLUMNS
@@ -156,7 +168,7 @@ def _merge_go(records):
 
 
 def run_go(rows, swissprot=None, **_):
-    """UniProt GO cross-references, inherited to isoforms with explicit scope."""
+    """UniProt GO cross-references on canonical Swiss-Prot rows only."""
     import go
     import swissprot_source
 
@@ -166,16 +178,23 @@ def run_go(rows, swissprot=None, **_):
         for meta, record in swissprot_source.iter_records(swissprot)
     }
     for row in rows:
-        if row.get("row_kind") == "swissprot_canonical":
-            parents = [row.get("uniprot_id")]
-            scope = "direct UniProtKB protein annotation"
-        else:
-            parents = row.get("uniprot_parent_ids") or []
-            scope = "inherited from mapped Swiss-Prot parent(s); not isoform-specific"
+        canonical = row.get("row_kind") == "swissprot_canonical"
+        parents = [row.get("uniprot_id")] if canonical else []
+        scope = (
+            "direct UniProtKB canonical protein annotation"
+            if canonical else
+            "not applicable: UniProt GO annotation is canonical-specific"
+        )
         records = [by_accession[parent] for parent in parents if parent in by_accession]
         yield {
             "protein_key": row["protein_key"],
-            **(_merge_go(records) if records else copy.deepcopy(go.EMPTY)),
+            **(
+                _merge_go(records)
+                if records else (
+                    copy.deepcopy(go.EMPTY)
+                    if canonical else {column: None for column in go.EMPTY}
+                )
+            ),
             "go_annotation_scope": scope,
             "go_source_uniprot_ids": [p for p in parents if p in by_accession],
         }
@@ -197,14 +216,25 @@ def run_eclip(rows, eclip_table=None, **_):
     by_gene, columns = eclip.load(eclip_table)
     for row in rows:
         symbol = row.get("gene_symbol")
-        measured = symbol in by_gene
+        record = by_gene.get(symbol)
+        measured = False
+        if record is not None:
+            for column, value in record.items():
+                if not column.startswith("has_") and column != "n_eclip_sources":
+                    continue
+                if str(value).strip().lower() not in {"", "0", "0.0", "false", "none", "nan"}:
+                    measured = True
+                    break
         yield {
             "protein_key": row["protein_key"],
             **eclip.columns_for(symbol, by_gene, columns),
             "eclip_annotation_scope": (
                 "gene-level CLIP measurement broadcast to protein isoforms"
-                if measured else
-                "not measured in the supplied CLIP compilation"
+                if measured else (
+                    "RBP census member not measured in the supplied CLIP compilation"
+                    if record is not None else
+                    "gene absent from the supplied RBP/CLIP compilation"
+                )
             ),
         }
 
@@ -239,6 +269,12 @@ def run_interpro(rows, interpro_tsv=None, **_):
             **(copy.deepcopy(record) if record is not None else copy.deepcopy(interpro.EMPTY)),
             "interpro_source_refseq_protein": source,
             "interpro_version": interpro.VERSION,
+            "interpro_annotation_scope": (
+                "direct InterProScan hits for a matching RefSeq protein accession"
+                if record is not None else
+                "no hit or accession absent from supplied InterProScan TSV; "
+                "the hit-only TSV cannot distinguish these cases"
+            ),
         }
 
 
@@ -246,23 +282,26 @@ def columns_interpro(**_):
     import interpro
 
     return ["protein_key"] + interpro.COLUMNS + [
-        "interpro_source_refseq_protein", "interpro_version"
+        "interpro_source_refseq_protein", "interpro_version",
+        "interpro_annotation_scope",
     ]
 
 
 def run_ptm(rows, ptm_csv=None, **_):
-    """Canonical PTM sites plus residue-conserving projection to isoforms."""
+    """Canonical UniProt PTM sites; sequence-distinct isoforms remain null."""
     import ptm
 
     _require(ptm_csv, "--ptm-csv")
     source = ptm.load_wide_csv(ptm_csv)
-    yield from ptm.annotate_rows(rows, source)
+    yield from ptm.annotate_rows(rows, source, project_isoforms=False)
 
 
 def columns_ptm(**_):
     import ptm
 
-    return ["protein_key"] + ptm.PTM_COLUMNS + ptm.PROVENANCE_COLUMNS
+    return ["protein_key"] + ptm.PTM_COLUMNS + ptm.PROVENANCE_COLUMNS + [
+        "ptm_annotation_scope"
+    ]
 
 
 def run_opentargets(
@@ -336,11 +375,8 @@ def run_cdcode(rows, cdcode_root=None, **_):
         raise ValueError(f"CD-CODE source/member ordering failed validation: {problems[:3]}")
     index, attributes = cdcode.build_index(cdcode_root)
     for row in rows:
-        parents = (
-            [row.get("uniprot_id")]
-            if row.get("row_kind") == "swissprot_canonical"
-            else row.get("uniprot_parent_ids") or []
-        )
+        canonical = row.get("row_kind") == "swissprot_canonical"
+        parents = [row.get("uniprot_id")] if canonical else []
         records = [cdcode.lookup(parent, index, attributes) for parent in parents if parent]
         merged = copy.deepcopy(cdcode.EMPTY)
         seen_uid = set()
@@ -353,11 +389,14 @@ def run_cdcode(rows, cdcode_root=None, **_):
                     merged[column].append(record[column][item_index])
         yield {
             "protein_key": row["protein_key"],
-            **merged,
+            **(
+                merged if canonical
+                else {column: None for column in cdcode.EMPTY}
+            ),
             "cdcode_annotation_scope": (
                 "direct canonical UniProt membership"
-                if row.get("row_kind") == "swissprot_canonical"
-                else "inherited from mapped Swiss-Prot parent(s); not isoform-specific"
+                if canonical
+                else "not applicable: CD-CODE membership is canonical-specific"
             ),
         }
 
@@ -399,11 +438,20 @@ def run_string(rows, string_links=None, **_):
             }
             for query, partners in by_query.items()
         }
+        in_catalog = {
+            query: {
+                partner: score
+                for partner, score in partners.items()
+                if partner in ensp_to_uniprot
+            }
+            for query, partners in by_query.items()
+        }
         yield {
             "protein_key": row["protein_key"],
             "string_query_ensp_ids": queries,
             "string_partners_ensp_by_query": by_query,
             "string_partners_uniprot_by_query": translated,
+            "string_partners_ensp_in_catalog_by_query": in_catalog,
             "string_version": "12.0",
         }
 
@@ -414,6 +462,7 @@ def columns_string(**_):
         "string_query_ensp_ids",
         "string_partners_ensp_by_query",
         "string_partners_uniprot_by_query",
+        "string_partners_ensp_in_catalog_by_query",
         "string_version",
     ]
 
@@ -453,16 +502,26 @@ def run_go_roles(rows, go_features=None, **_):
     _require(go_features, "--go-features")
     by_key = _by_key(go_features)
     for row in rows:
+        canonical = row.get("row_kind") == "swissprot_canonical"
         yield {
             "protein_key": row["protein_key"],
-            **go_roles.flags_for(by_key.get(row["protein_key"], {})),
+            **(
+                go_roles.flags_for(by_key.get(row["protein_key"], {}))
+                if canonical
+                else {column: None for column in go_roles.ROLE_COLUMNS}
+            ),
+            "go_role_annotation_scope": (
+                "derived from canonical UniProt GO terms"
+                if canonical else
+                "not applicable: source GO annotation is canonical-specific"
+            ),
         }
 
 
 def columns_go_roles(**_):
     import go_roles
 
-    return ["protein_key"] + go_roles.ROLE_COLUMNS
+    return ["protein_key"] + go_roles.ROLE_COLUMNS + ["go_role_annotation_scope"]
 
 
 def run_rcsb(rows, rcsb_summary=None, **_):
@@ -477,13 +536,21 @@ def run_rcsb(rows, rcsb_summary=None, **_):
             if row.get("row_kind") == "swissprot_canonical"
             else None
         )
+        record = index.get(accession) if accession else None
         yield {
             "protein_key": row["protein_key"],
-            **copy.deepcopy(index.get(accession, rcsb.empty_summary())),
+            **(
+                copy.deepcopy(record)
+                if record is not None
+                else {column: None for column in rcsb.SUMMARY_COLUMNS}
+            ),
             "rcsb_annotation_scope": (
                 "direct SIFTS mapping for Swiss-Prot canonical sequence"
-                if accession else
-                "not inherited to sequence-distinct NCBI isoforms"
+                if record is not None else (
+                    "canonical accession absent from supplied RCSB/SIFTS summary"
+                    if accession else
+                    "not inherited to sequence-distinct NCBI isoforms"
+                )
             ),
         }
 

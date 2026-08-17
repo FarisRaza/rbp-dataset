@@ -2,8 +2,8 @@
 
 Each feature family has independent source code, input provenance, annotation
 scope, and sanity checks. These pages explain what its generated report means.
-Run `generate_feature_reports.py` after building sidecars to create data-specific
-Markdown and figures under `WORK_DIR/reports/`.
+Run `python rbp_pipeline/generate_feature_reports.py` after building sidecars
+to create data-specific Markdown and figures under `WORK_DIR/reports/`.
 
 - [CIDER](cider.md)
 - [IDRs](idr.md)

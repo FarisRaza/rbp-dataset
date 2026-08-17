@@ -557,6 +557,53 @@ def empty_summary():
     }
 
 
+def write_sifts_mapping_summary(sifts_path, accessions, summary_path):
+    """Write every SIFTS-mapped PDB entry for each supplied UniProt accession.
+
+    This is the bounded, fully automatic structure path used by the master
+    rebuild. It captures all PDB entry IDs and mapped chains from the current
+    weekly SIFTS release without requiring thousands of secondary-structure API
+    requests. Secondary-structure fields remain blank because they were not
+    measured by this fast mapping-only route; :mod:`stage_rcsb` can enrich the
+    same schema when those observations are wanted.
+    """
+    sifts = load_sifts(sifts_path, sorted(set(accessions)))
+    os.makedirs(os.path.dirname(os.path.abspath(summary_path)), exist_ok=True)
+    temporary = summary_path + ".part"
+    with open(temporary, "w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["uniprot_id"] + SUMMARY_COLUMNS)
+        writer.writeheader()
+        for accession in sifts.accessions:
+            mapping = sifts.by_accession[accession]
+            pdb_ids = list(mapping["pdb_ids"])
+            chains = {pdb: list(values) for pdb, values in mapping["chains"].items()}
+            writer.writerow({
+                "uniprot_id": accession,
+                "RCSB_PDB_IDs": repr(pdb_ids),
+                "RCSB_PDB_count": len(pdb_ids),
+                "RCSB_PDB_chains": repr(chains),
+                "RCSB_PDB_entries_with_secondary_structure_count": "",
+                "RCSB_PDB_entries_without_secondary_structure_count": "",
+                "RCSB_secondary_structure_observation_count": "",
+                "RCSB_helix_observation_count": "",
+                "RCSB_beta_strand_observation_count": "",
+                "RCSB_secondary_structure_complete_mapping_count": "",
+                "RCSB_secondary_structure_partial_mapping_count": "",
+            })
+    os.replace(temporary, summary_path)
+    return {
+        "sifts_release": sifts.release,
+        "reviewed_uniprot_accessions": len(sifts.accessions),
+        "proteins_with_pdb": sum(
+            bool(sifts.by_accession[accession]["pdb_ids"])
+            for accession in sifts.accessions
+        ),
+        "unique_pdb_entries": len(sifts.pdb_ids),
+        "mapping_segments": sifts.mapping_segment_count,
+        "summary": os.path.abspath(summary_path),
+    }
+
+
 def consolidate(
     sifts,
     batch_results,

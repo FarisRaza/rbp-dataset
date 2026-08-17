@@ -1,258 +1,219 @@
-# Human proteome and isoform feature pipeline
+# Human proteome and RNA-binding-protein dataset
 
-This repository reconstructs a protein-level dataset containing:
+This repository rebuilds the Kappel Lab protein/isoform table from source data.
+It produces one canonical row for every reviewed human UniProtKB/Swiss-Prot
+entry plus sequence-unique curated NCBI RefSeq `NP_` isoforms mapped to those
+proteins.
 
-- one guaranteed canonical row for every reviewed human UniProtKB/Swiss-Prot
-  entry;
-- sequence-deduplicated human NCBI RefSeq protein isoforms;
-- explicit UniProt, NCBI Gene, HGNC, RefSeq, ENSG, ENST, and ENSP mappings;
-- independently generated feature sidecars that are joined by `protein_key`;
-- clean tissue-expression and disease/condition annotations from Open Targets.
+The final table follows the feature-block layout of
+`Isoform_Post_Merge_PSLab_OpenTargets.csv`, with three intentional changes:
 
-The pipeline is designed so each scientific feature family can be rerun alone,
-and the master command can rebuild a selected subset or the complete table.
-Large source data, generated Parquet files, virtual environments, and model
-checkouts are deliberately excluded from Git.
+- explicit UniProt, NCBI Gene ID, RefSeq, ENSG, ENST, and ENSP identifiers;
+- revised Open Targets tissue-expression and disease/condition annotations;
+- `dominant_isoform = 1` only when the row sequence exactly matches its mapped
+  canonical UniProt sequence.
 
-## Installation
+UniProt-coordinate annotations are null on sequence-distinct isoforms. Features
+computed directly from amino-acid sequence, including CIDER, metapredict IDRs,
+IDR-CIDER, and PSLab, are computed for every sequence.
+
+## Repository layout
+
+```text
+build_dataset.py          one master command
+setup_environment.py      installs metapredict and PSLab environments
+rbp_pipeline/             current catalog, feature-family, and assembly code
+docs/feature_families/    interpretation and sanity-check documentation
+eclip_source_pipeline/    raw ENCODE/ENCORI/POSTAR/Skipper preparation
+legacy/                   obsolete append-to-an-existing-CSV workflow
+tests/                    fast offline tests
+```
+
+Large biological sources, generated tables, virtual environments, and model
+checkouts are excluded from Git.
+
+## Install
 
 Python 3.10 or newer is recommended.
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
+source .venv/bin/activate            # Windows: .venv\Scripts\activate
 python -m pip install -r requirements.txt
 python setup_environment.py
+python -m unittest discover -s tests -v
 ```
 
-`setup_environment.py` creates isolated environments for metapredict and PSLab
-because their model dependencies conflict. It also clones the published PSLab
-predictor and model files. Do not commit `.venv`, those environments, or
-`vendor/`.
+`setup_environment.py` creates separate metapredict and PSLab environments
+because their model dependencies conflict. It also downloads the published
+PSpred models.
 
-## Data sources
+## Prepare source data
 
-The master downloads UniProt, NCBI, Ensembl, and Open Targets automatically.
-Several feature families need a manually downloaded, computed, or archived
-source. See [`DATA_SOURCES.md`](DATA_SOURCES.md) before the first full run and
-use [`SOURCE_MANIFEST.json`](SOURCE_MANIFEST.json) for automation.
+The master command automatically downloads current reviewed human Swiss-Prot,
+the human RefSeq `NP_` release, Ensembl peptides, Open Targets, and the current
+SIFTS PDB mapping. Some archived or separately prepared inputs cannot be stored
+in Git:
 
-The most important known gaps are:
+- `rbp_master_with_eclip.csv`
+- `df_np_unique.interpro.tsv`
+- `df_ptm.csv`
+- `9606.protein.links.v12.0.txt`
+- `condensates.csv`, `MISSING.csv`, and `CD-CODE_Files/`
 
-- PTM annotation currently requires the complete archived `df_ptm.csv` or a
-  newly built iPTMNet export; the local historical raw export was truncated.
-- Exact historical CD-CODE reproduction requires the externally archived
-  `condensates.csv`, `MISSING.csv`, and `CD-CODE_Files/` bundle.
+Place them together in a source directory. Acquisition and regeneration details
+are in [DATA_SOURCES.md](DATA_SOURCES.md).
 
-These data files should live outside the repository.
-
-## Quick start
-
-Build the default feature set:
+## Build the complete table
 
 ```bash
-python rebuild_from_scratch.py all \
-  --work-dir /data/human-proteome-build \
-  --source-dir /data/human-proteome-sources
-```
-
-The default features are `idr`, `domains`, `go`, `eclip`, `interpro`, `ptm`,
-`opentargets`, `cdcode`, `string`, `go_roles`, `cider`, and `pslab`. RCSB is
-optional because its network stage is slower.
-
-Build every family, including RCSB:
-
-```bash
-python rebuild_from_scratch.py all \
+python build_dataset.py all \
   --work-dir /data/human-proteome-build \
   --source-dir /data/human-proteome-sources \
   --features all
 ```
 
-Stages are resumable. Existing downloads, catalogs, and feature sidecars are
-kept unless `--force` is supplied.
+The workflow is resumable. Existing downloads, catalogs, and feature sidecars
+are reused unless `--force` is supplied. The main output is:
 
-## Select only particular feature families
+```text
+WORK_DIR/human_proteome_isoforms_features.parquet
+```
 
-`--features` accepts `default`, `all`, or a comma-separated list. Only requested
-sidecars are assembled, reducing computation and final-table storage.
+Use `--output /path/table.csv` when CSV is required. Parquet is much smaller
+and preserves typed identifier lists.
+
+## Choose column families
+
+`--features` selects complete feature-family blocks. Available values are:
+
+```text
+idr, domains, go, eclip, interpro, ptm, opentargets, cdcode,
+string, go_roles, cider, pslab, rcsb
+```
+
+For example, build only sequence/RNA-binding-oriented annotations:
 
 ```bash
-python rebuild_from_scratch.py all \
-  --work-dir /data/rna-binding-subset \
+python build_dataset.py all \
+  --work-dir /data/rbp-feature-build \
   --source-dir /data/human-proteome-sources \
-  --features idr,cider,eclip,interpro,ptm,go
+  --features idr,cider,pslab,eclip,interpro,go,go_roles
 ```
 
-Dependencies are added and ordered automatically. For example, selecting only
-`cider` computes the IDR and domain sidecars it needs, but the final table still
-contains only the requested CIDER family. Similarly, `pslab` computes IDRs and
-`go_roles` computes GO annotations as hidden dependencies.
+Dependencies are automatic. Requesting `cider` also computes IDR and domain
+sidecars needed for per-region CIDER, but only requested family blocks are
+included in the final table.
 
-To tolerate unavailable manual sources during an exploratory run:
+To keep only exact final columns, add `--columns`. `protein_key` is always kept:
 
 ```bash
-python rebuild_from_scratch.py all \
-  --work-dir /data/minimal-build \
-  --features idr,domains,go,cider \
-  --skip-unavailable
+python build_dataset.py assemble \
+  --work-dir /data/rbp-feature-build \
+  --features idr,cider,eclip \
+  --columns uniprot_id,dominant_isoform,Name,ENSG,sequence,IDR_count,FCR,encori_published_n_regions
 ```
 
-## Select only particular proteins
+Run `python build_dataset.py --help` for all options.
 
-Selectors are applied after the complete canonical-plus-isoform catalog is
-constructed and before any feature family runs. Different selectors should use
-different work directories, or `--force` when intentionally replacing a
-catalog.
+## Choose rows
 
-By identifiers:
+Selectors are applied before feature computation, so they reduce both runtime
+and sidecar size. Multiple selector types are combined by union.
+
+Select UniProt, Ensembl, RefSeq, NCBI Gene/HGNC IDs, protein keys, or symbols:
 
 ```bash
-python rebuild_from_scratch.py all \
-  --work-dir /data/rbp-build \
+python build_dataset.py all \
+  --work-dir /data/selected-proteins \
+  --source-dir /data/human-proteome-sources \
   --proteins "P09651,Q01844,ENSG00000116044" \
-  --features idr,cider,eclip,interpro,ptm
+  --features idr,cider,eclip,go
 ```
 
-By a text file containing one identifier per line:
+Select identifiers from a text file:
 
 ```bash
-python rebuild_from_scratch.py all \
-  --work-dir /data/rbp-build \
+python build_dataset.py all \
+  --work-dir /data/selected-proteins \
   --protein-list rbp_accessions.txt
 ```
 
-By exact amino-acid sequences in FASTA:
+Select exact amino-acid sequences from FASTA:
 
 ```bash
-python rebuild_from_scratch.py all \
-  --work-dir /data/fasta-build \
+python build_dataset.py all \
+  --work-dir /data/fasta-selection \
   --protein-fasta proteins.fasta \
   --strict-selection
 ```
 
-Identifier matching accepts protein keys, gene symbols, NCBI Gene/HGNC IDs,
-UniProt accessions, RefSeq protein/transcript accessions, and ENSG/ENST/ENSP
-IDs. Versioned and versionless RefSeq/Ensembl IDs are recognized. A canonical
-UniProt accession selects its canonical row and mapped NCBI isoform rows. FASTA
-selection is exact-sequence-specific. Multiple selector types are combined by
-union.
+A UniProt accession retains its canonical row and mapped NCBI isoform rows.
+FASTA selection is exact-sequence-specific. `--strict-selection` fails if any
+request is unmatched.
 
-The catalog audit records matched and unmatched requests. Use
-`--strict-selection` to fail rather than continue when anything is unmatched.
+## Feature scope
+
+| Family | Scope in the final table |
+|---|---|
+| CIDER, metapredict IDR, IDR-CIDER, PSLab | every amino-acid sequence |
+| UniProt domains and domain-CIDER | canonical UniProt sequence only |
+| UniProt GO and derived GO RNA-role flags | canonical UniProt sequence only |
+| PTM snapshot | canonical UniProt sequence only |
+| CD-CODE | canonical UniProt protein only |
+| RCSB/PDB | canonical UniProt sequence only; all current SIFTS-mapped PDB IDs |
+| InterPro | matching RefSeq protein sequence |
+| Open Targets | ENSG/gene-level, broadcast to mapped isoforms |
+| eCLIP | gene-level, broadcast to mapped isoforms; ENCODE and ENCORI kept separate |
+| STRING | represented ENSP identifiers |
+
+Each sidecar includes a scope/provenance field where the distinction matters.
+Missing eCLIP data means “not measured in the supplied compilation,” not a
+negative binding result.
 
 ## Outputs
 
 ```text
 WORK_DIR/
-├── sources/                              # downloads; not Git content
-├── catalog/
-│   ├── human_protein_isoforms.parquet
-│   └── catalog.audit.json
-├── features/
-│   ├── idr.parquet
-│   ├── eclip.parquet
-│   └── ... one keyed sidecar per selected family
-├── human_proteome_isoforms_features.parquet
-├── human_proteome_isoforms_features.parquet.manifest.json
-└── run_manifest.json
+|-- sources/                                  downloaded source snapshots
+|-- catalog/
+|   |-- human_protein_isoforms.parquet
+|   |-- catalog.audit.json
+|   `-- reports/                              mapping-gap reports
+|-- features/                                 one keyed Parquet per family
+|-- human_proteome_isoforms_features_clean.parquet
+|-- human_proteome_isoforms_features.parquet  sorted compatibility output
+`-- run_manifest.json
 ```
 
-The assembled table can also be CSV:
-
-```bash
-python rebuild_from_scratch.py assemble \
-  --work-dir /data/human-proteome-build \
-  --features idr,cider,eclip \
-  --output /data/human-proteome-build/subset.csv
-```
-
-In Python, the requested dataframe is simply:
-
-```python
-import pandas as pd
-df = pd.read_parquet("/data/human-proteome-build/human_proteome_isoforms_features.parquet")
-```
+The clean assembly retains native identifiers and provenance. The final output
+adds the familiar legacy aliases and feature-family order, replaces outdated
+Open Targets columns, and sorts by UniProt with the canonical sequence first.
 
 ## Run one family directly
 
-Each `annotate_<family>.py` program reads the clean catalog and writes one keyed
-sidecar. For example:
+Every `rbp_pipeline/annotate_<family>.py` file is independently runnable. For
+example:
 
 ```bash
-python annotate_interpro.py \
+python rbp_pipeline/annotate_interpro.py \
   --input /data/build/catalog/human_protein_isoforms.parquet \
   --interpro-tsv /data/sources/df_np_unique.interpro.tsv \
   --output /data/build/features/interpro.parquet
 ```
 
-Available families:
+Scientific implementation and source notes live in the corresponding module,
+such as `rbp_pipeline/interpro.py` or `rbp_pipeline/eclip.py`.
 
-| Family | Main source/method |
-|---|---|
-| `cider` | localCIDER sequence metrics; also per IDR/domain |
-| `idr` | metapredict V3 disorder/fold geometry |
-| `domains` | reviewed UniProt DOMAIN and ZN_FING features |
-| `go` | UniProt GO cross-references |
-| `eclip` | separate ENCODE, ENCORI, POSTAR3, and Skipper summaries |
-| `interpro` | InterProScan domain models on RefSeq proteins |
-| `ptm` | canonical PTM sites with residue-conserving isoform projection |
-| `opentargets` | normalized tissue expression and disease associations |
-| `cdcode` | CD-CODE condensate membership |
-| `string` | STRING v12 protein interactions |
-| `go_roles` | derived transcription/translation/mRNA-stability flags |
-| `pslab` | phase-separation predictions per IDR |
-| `rcsb` | optional PDB/SIFTS and secondary-structure summary |
-
-Implementation details and provenance live in each family module's docstring.
-See the individual [`docs/feature_families`](docs/feature_families/README.md)
-guides for interpretation and family-specific sanity checks.
-The historical compatibility workflow remains documented in the source files,
-while [`REBUILD_FROM_SCRATCH.md`](REBUILD_FROM_SCRATCH.md) describes the clean
-catalog design in more depth.
-
-`export_catalog_fasta.py` exports canonical, NCBI-isoform, or all catalog
-sequences with stable UniProt, RefSeq, or `protein_key` headers. It is the
-documented preparation step for InterProScan and the optional RCSB workflow.
-
-## Exploratory and sanity-check reports
-
-After a run, generate one Markdown report and two PNG figures per selected
-feature family:
+## Sanity-check reports
 
 ```bash
-python generate_feature_reports.py \
+python rbp_pipeline/generate_feature_reports.py \
   --work-dir /data/human-proteome-build \
   --features all \
   --skip-unavailable
 ```
 
-Reports are written to `WORK_DIR/reports/<family>.md`. Each report checks key
-uniqueness and catalog coverage, summarizes populated columns and the primary
-feature distribution, and embeds coverage/distribution figures. This provides
-a fast sanity check without reading the very wide assembled table.
-
-To keep a snapshot of reports in the GitHub repository, direct the output to a
-tracked documentation directory after a finalized run:
-
-```bash
-python generate_feature_reports.py \
-  --work-dir /data/human-proteome-build \
-  --features all \
-  --output-dir docs/generated_reports
-git add docs/generated_reports
-```
-
-These reports and PNGs are small derived documentation; the underlying data
-sidecars and final Parquet table should remain outside Git.
-
-## Tests
-
-```bash
-python -m unittest -v test_rebuild.py
-python -m py_compile *.py eclip_source_pipeline/*.py
-```
-
-Before publishing a data release, preserve `run_manifest.json`,
-`catalog.audit.json`, every source manifest/checksum, and the final table's
-assembly manifest alongside the data artifact.
+This writes one Markdown summary plus coverage/distribution figures per family.
+Generated data remain outside Git; manifests and report summaries should be
+archived with any released table.

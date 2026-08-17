@@ -10,11 +10,11 @@
       "url": "https://rest.uniprot.org/uniprotkb/stream?format=txt&query=%28organism_id%3A9606%29+AND+%28reviewed%3Atrue%29"
     },
     {
-      "id": "ncbi_human_gene_package",
+      "id": "ncbi_human_refseq_np_release",
       "families": ["catalog"],
       "acquisition": "automatic",
-      "default_work_path": "sources/ncbi_human_gene.zip",
-      "url": "https://www.ncbi.nlm.nih.gov/datasets/docs/v2/how-tos/genes/download-gene-data-package/"
+      "default_work_path": "sources/ncbi_refseq_ftp",
+      "url": "https://ftp.ncbi.nlm.nih.gov/refseq/H_sapiens/mRNA_Prot/"
     },
     {
       "id": "ensembl_current_human_peptides",
@@ -83,10 +83,10 @@
     {
       "id": "rcsb_summary",
       "families": ["rcsb"],
-      "acquisition": "optional_user_computed",
-      "default_manual_filename": "Human_Proteome_RCSB_PDB_Summary.csv",
+      "acquisition": "automatic_sifts_mapping_or_optional_enriched_summary",
+      "default_work_path": "sources/human_swissprot_rcsb_summary.csv",
       "override": "--rcsb-summary",
-      "instructions": "python stage_rcsb.py",
+      "instructions": "python rbp_pipeline/stage_rcsb.py for optional secondary-structure enrichment",
       "url": "https://www.ebi.ac.uk/pdbe/docs/sifts/quick.html"
     }
   ]
