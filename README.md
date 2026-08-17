@@ -1,21 +1,51 @@
 # Human proteome and RNA-binding-protein dataset
 
-This repository rebuilds the Kappel Lab protein/isoform table from source data.
-It produces one canonical row for every reviewed human UniProtKB/Swiss-Prot
-entry plus sequence-unique curated NCBI RefSeq `NP_` isoforms mapped to those
-proteins.
+This repository documents a human proteome-wide dataset with an emphasis on
+RNA-binding proteins (RBPs). The current catalog contains **54,117 protein
+sequence records**, defined by unique NCBI Gene ID–amino-acid-sequence pairs
+plus canonical sequence fallbacks, representing **20,431 reviewed human
+UniProtKB/Swiss-Prot proteins**. It combines current curated NCBI RefSeq `NP_`
+products with canonical UniProt sequences when an NCBI product is unavailable.
 
-The final table follows the feature-block layout of
-`Isoform_Post_Merge_PSLab_OpenTargets.csv`, with three intentional changes:
+For these proteins and isoforms, the dataset collects:
 
-- explicit UniProt, NCBI Gene ID, RefSeq, ENSG, ENST, and ENSP identifiers;
-- revised Open Targets tissue-expression and disease/condition annotations;
-- `dominant_isoform = 1` only when the row sequence exactly matches its mapped
-  canonical UniProt sequence.
+- **Identifiers:** UniProt, NCBI Gene ID, RefSeq protein/transcript, HGNC, ENSG,
+  ENST, and ENSP mappings with explicit mapping provenance and ambiguity flags.
+- **CIDER:** sequence charge, hydropathy, composition, patterning, and related
+  biophysical properties computed with localCIDER.
+- **Intrinsically disordered regions (IDRs):** IDR and folded-region locations,
+  sequences, counts, and lengths predicted with metapredict.
+- **CIDER on IDRs:** localCIDER properties calculated separately for every
+  predicted IDR.
+- **Curated UniProt domains:** canonical DOMAIN and ZN_FING annotations with
+  their coordinates and sequences.
+- **CIDER on domains:** localCIDER properties calculated for each curated
+  UniProt domain region.
+- **InterPro:** sequence-level domain and functional annotations from
+  InterProScan member databases.
+- **PSLab:** phase-separation-related sequence features and predictions for
+  each predicted IDR.
+- **Gene Ontology:** cellular-component, biological-process, and
+  molecular-function terms with evidence codes.
+- **RNA-related GO roles:** derived indicators for transcription, translation,
+  mRNA stability, and translation-related stability.
+- **eCLIP:** gene-level RNA-binding-region summaries from ENCODE and ENCORI,
+  retained as separate evidence sources, alongside POSTAR3 and Skipper.
+- **STRING:** protein–protein interaction partners and confidence scores for
+  represented Ensembl proteins.
+- **CD-CODE:** membership and metadata for experimentally characterized
+  biomolecular condensates.
+- **Post-translational modifications:** canonical UniProt sites across eleven
+  PTM classes, including phosphorylation, ubiquitination, and glycosylation.
+- **Open Targets:** normalized tissue-expression measurements and named
+  disease/condition associations with therapeutic-area information.
+- **RCSB/PDB:** all SIFTS-mapped experimental PDB entries and chains for each
+  canonical UniProt protein.
 
-UniProt-coordinate annotations are null on sequence-distinct isoforms. Features
-computed directly from amino-acid sequence, including CIDER, metapredict IDRs,
-IDR-CIDER, and PSLab, are computed for every sequence.
+We envision this dataset as an atlas for identifying sequence features that
+shape proteins' interactions with RNA and other proteins, their roles in
+disease and therapeutic pathways, and their broader functions and behaviors
+within the cell.
 
 ## Repository layout
 
